@@ -1314,6 +1314,18 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
         end
     end
 
+    -- BẢO VỆ GAMEPASS: Acc có gp chỉ được bật isFightingBoss khi Auto Farm đã thực sự đặt xong (res == true)
+    if HasAutoFarmGamepass() then
+        local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
+        if not afReady or lastAutoFarmZone ~= zoneNum then
+            local afOk = EnsureAutoFarmActiveAtZone(zoneNum)
+            if not afOk then
+                warn(string.format("[auto boss] ⚠️ Chưa kích hoạt xong Auto Farm tại Zone %d (res: false) -> Hoãn trận Boss!", zoneNum))
+                return false
+            end
+        end
+    end
+
     runState.isFightingBoss = true
 
     -- Đứng tại vị trí Idle của Boss
@@ -2120,6 +2132,18 @@ local function PerformEventIntermissions()
 end
 
 local function BossEndGameCycleLoop(targetZone)
+    -- BẢO VỆ GAMEPASS: Acc có gp chỉ được bật isFightingBoss khi Auto Farm đã thực sự đặt xong (res == true)
+    if HasAutoFarmGamepass() then
+        local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
+        if not afReady or lastAutoFarmZone ~= targetZone then
+            local afOk = EnsureAutoFarmActiveAtZone(targetZone)
+            if not afOk then
+                warn(string.format("[auto boss] ⚠️ Auto Farm chưa kích hoạt xong tại Zone %d (res: false) -> Hoãn chu kỳ Boss!", targetZone))
+                return 0
+            end
+        end
+    end
+
     runState.isFightingBoss = true
     local info = BOSS_INFO[targetZone]
     local minCoinsToFight = info and info.MinCoins or 98000
@@ -2208,6 +2232,19 @@ local function BossEndGameCycleLoop(targetZone)
 end
 
 local function HatchEndGameCycleLoop()
+    -- BẢO VỆ GAMEPASS: Acc có gp chỉ được chạy Hatch khi Auto Farm đã thực sự đặt xong (res == true)
+    if HasAutoFarmGamepass() then
+        local targetZone = CONFIG.EndGame.TargetZone or 6
+        local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
+        if not afReady or lastAutoFarmZone ~= targetZone then
+            local afOk = EnsureAutoFarmActiveAtZone(targetZone)
+            if not afOk then
+                warn(string.format("[auto hatch] ⚠️ Auto Farm chưa kích hoạt xong tại Zone %d (res: false) -> Hoãn chu kỳ Hatch!", targetZone))
+                return 0
+            end
+        end
+    end
+
     runState.isHatching = true
     if not CustomEggsCmds or not Network then
         runState.isHatching = false
@@ -2393,9 +2430,14 @@ local function StartMainAutomationLoop()
                 local targetCoins = CONFIG.EndGame.TargetCoins or 1_000_000_000
                 local hasAutoFarm = HasAutoFarmGamepass()
 
-                -- BƯỚC 1: ĐẶT AUTO FARM ĐẦU TIÊN NẾU CÓ
+                -- BƯỚC 1: ĐẶT AUTO FARM BẮT BUỘC NẾU CÓ GAMEPASS (Chỉ chạy EndGame khi res == true)
                 if hasAutoFarm then
-                    EnsureAutoFarmActiveAtZone(targetZone)
+                    local autoFarmActive = EnsureAutoFarmActiveAtZone(targetZone)
+                    if not autoFarmActive then
+                        print(string.format("[auto farm] ⏳ Acc có Gamepass nhưng chưa kích hoạt xong Auto Farm tại Zone %d (res: false). Đang thử lại trước khi chạy EndGame...", targetZone))
+                        task.wait(1.0)
+                        continue
+                    end
                 end
 
                 if CONFIG.EndGame.Boss == true then
@@ -2460,10 +2502,17 @@ task.spawn(function()
 
     if not Running() then return end
 
-    -- BƯỚC 1: ĐẶT AUTO FARM ĐẦU TIÊN NẾU CÓ GAMEPASS
+    -- BƯỚC 1: ĐẶT AUTO FARM ĐẦU TIÊN NẾU CÓ GAMEPASS (Lặp cho đến khi res == true)
     local targetZone = CONFIG.EndGame.TargetZone or 6
     if HasAutoFarmGamepass() then
-        EnsureAutoFarmActiveAtZone(targetZone)
+        while Running() do
+            local afOk = EnsureAutoFarmActiveAtZone(targetZone)
+            if afOk == true then
+                break
+            end
+            print(string.format("[auto farm] 🔄 Đang đợi kích hoạt Auto Farm thành công tại Zone %d (res: false)... Thử lại sau 1.5 giây.", targetZone))
+            task.wait(1.5)
+        end
     end
 
     -- BƯỚC 2: THỰC HIỆN TOÀN BỘ CÁC TƯƠNG TÁC ĐÃ CHECK RES TRUE (Unlock Nhà, Gõ Cửa, Mở Pumpkin, Mua Upgrade)
