@@ -1,25 +1,3 @@
--- ============================================================================
--- Pet Simulator 99: Hatch War & Blood Moon Automation Engine
--- File: e:\all_game_rbl\p99\bloon_moon\auto_map.lua
--- Mục tiêu:
---   1. Auto Map: Mở toàn bộ Gate 2 -> Gate 6 (Hạ lần lượt Boss 1 Ember IBZ,
---      Boss 2 Spore Lulu, Boss 3 Ghoul Aussie, Boss 4 Warlock Ahmad,
---      Boss 5 Werewolf Elkonn, Boss 6 Count Nay).
---   2. Auto Upgrade: Tự động ghé máy HatchWarUpgradeMachine mua toàn bộ 13 Upgrades
---      (bao gồm 5 nâng cấp Part 2: MoonLuck, Afterglow, HatchSpeed, ShinyHunter, CoinHunter).
---   3. Blood Moon Engine:
---      - Tự động theo dõi chu kỳ Blood Moon (State: down / warn / up).
---      - Auto Knock Doors: Tự động gõ cửa Nhà 1 -> 8 khi hết cooldown.
---        Khi có Blood Moon: Ưu tiên Nhà 7 & 8 để săn Huge Count Penguin và Titanic Snoligoster.
---      - Auto Unlock Houses: Tự động mở khóa nhà 2 -> 8 khi đủ Hatch War Wand.
---      - Auto Giant Pumpkin: Tự động kích hoạt nhận thưởng Giant Pumpkin (có tỉ lệ Titanic Count Wolf).
---   4. EndGame Farm: Duy trì farm bãi Zone 6 (Count's Manor) -> xả 1B coin vào Boss 6 (Count Nay)
---      hoặc Manor Egg (Titanic Headless Dominus / Huge Wendigo).
--- ============================================================================
-
--- ============================================================================
--- 0. Game Load Guard
--- ============================================================================
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -49,15 +27,12 @@ local setreadonly = env.setreadonly
 local make_writeable = env.make_writeable
 local dynamicRequire = env.require or require
 
--- ============================================================================
--- 1. Lifecycle & State Management
--- ============================================================================
 if getgenv().AutoMapStop then
     pcall(getgenv().AutoMapStop)
 end
 getgenv().AutoMapRunning = true
 
-local runState = { 
+local runState = {
     alive = true,
     isFightingBoss = false,
     isHatching = false,
@@ -124,9 +99,6 @@ local function Teardown()
 end
 getgenv().AutoMapStop = Teardown
 
--- ============================================================================
--- 2. Services & Dynamic Module Loader
--- ============================================================================
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Library = ReplicatedStorage:WaitForChild("Library")
 local Client = Library:WaitForChild("Client")
@@ -185,9 +157,6 @@ local SprayModule = BossFolder and LoadModule(BossFolder, "Spray")
 local DoorsMod = HatchWarFolder and LoadModule(HatchWarFolder, "Doors")
 local PumpkinMod = HatchWarFolder and LoadModule(HatchWarFolder, "Pumpkin")
 
--- ============================================================================
--- 3. Configuration & Boss Map Definitions
--- ============================================================================
 local function FormatNumber(n)
     n = tonumber(n) or 0
     if n >= 1_000_000_000 then
@@ -201,46 +170,64 @@ local function FormatNumber(n)
     end
 end
 
-local CONFIG = {
-    AutoMap = true,                     -- Tự động mở Gate 2 -> Gate 6
-    AutoUltimate = true,                -- Tự động sử dụng Ultimate khi nạp đủ 100% (qua .Changed / Event / Watcher)
-    SilentHatch = true,                 -- Xóa model hatch egg và ẩn toàn bộ UI kết quả (Fast Hatch siêu mượt, không lag)
-    AutoFlags = true,                   -- Tự động dùng "Fortune Flag" hoặc "Coins Flag" tối đa slots (Cắm 1 lần rồi farm)
-    
-    -- [CẤU HÌNH AUTO UPGRADE TỐI ƯU]
-    AutoUpgrade = true,                 -- Tự động mua toàn bộ 13 Event Upgrades khi đủ Spooky Wands
-    AutoBuyEggSlots = true,             -- Tự động mua tối đa Egg Slots tại EggSlotsMachine khi đủ Diamonds & Rank
-    UpgradeMinWands = 60,               -- Mua ngay từ Tier 1 (chỉ cần 60 wands)
-    UpgradeCheckInterval = 300,         -- Chu kỳ kiểm tra nâng cấp máy: 5 phút/lần (300 giây)
+local DEFAULT_CONFIG = {
+    AutoMap = true,
+    AutoUltimate = true,
+    SilentHatch = true,
+    AutoFlags = true,
 
-    -- [CẤU HÌNH BLOOD MOON & STREET DOORS]
+    AutoUpgrade = true,
+    AutoBuyEggSlots = true,
+    UpgradeMinWands = 60,
+    UpgradeCheckInterval = 300,
+
     BloodMoon = {
-        AutoKnock = true,               -- Tự động gõ cửa các nhà khi hết cooldown
-        OnlyInBloodMoon = false,        -- false: Gõ cửa cả khi bình thường; true: Chỉ gõ khi có Blood Moon
-        PrioritizeHouses7And8 = true,   -- Ưu tiên Nhà 7 & 8 khi Blood Moon để săn Huge Count Penguin & Titanic Snoligoster
-        AutoUnlockHouses = true,        -- Tự động mở khóa nhà 2 -> 8 khi đủ Lollipops
-        AutoPumpkin = true,             -- Tự động mở Giant Pumpkin khi đủ điều kiện
+        AutoKnock = true,
+        OnlyInBloodMoon = false,
+        PrioritizeHouses7And8 = true,
+        AutoUnlockHouses = true,
+        AutoPumpkin = true,
     },
 
-    -- [CẤU HÌNH ENDGAME TARGET ZONE 6]
-    -- Khi đến TargetZone = 6: Farm đến đủ TargetCoins (1B coin) mới kích hoạt func Hatch HOẶC Boss.
-    -- QUY TẮC: CHỈ CHẠY 1 TRONG 2 (hatch = true HOẶC boss = true)!
+    League = {
+        Enabled = true,
+        PrioritizeChests = true,
+        PostKnockCheck = true,
+        GlobalRadar = true,
+        ScanInterval = 2.5,
+    },
+
     EndGame = {
-        TargetZone = 6,                 -- target = 6: Zone mục tiêu cao nhất (Count's Manor)
-        TargetCoins = 1_000_000_000,    -- coins = 1b (1,000,000,000): Đủ 1B coin mới run func
-        Hatch = false,                  -- hatch = true: Mở trứng Manor Egg khi đủ 1B coin
-        Boss = true,                   -- boss = true: Đánh Boss 6 Count Nay khi đủ 1B coin
-        EggName = "Manor Egg",          -- "Manor Egg" (Zone 6), "Werewolf Egg" (Zone 5), "Witching Egg" (Zone 4)
-        EggSpot = Vector3.new(7537.25, 21.37, 21939.18),
+        TargetZone = 6,
+        TargetCoins = 1_000_000_000,
+        Hatch = false,
+        Boss = true,
+        EggName = "Manor Egg",
+        EggSpot = Vector3.new(7537.90, 16.21, 21962.36),
     },
 
-    MinCoinsToFight = 200,              -- Min coins để đánh boss Zone 1 (sẽ tự scale theo zone)
-    RecommendedRatio = 0.90,            -- Farm đạt >= 90% Recommended trước khi đánh boss (Zone 1 -> 5)
+    MinCoinsToFight = 200,
+    RecommendedRatio = 0.90,
 }
+
+local function MergeConfig(target, source)
+    for k, v in pairs(source) do
+        if type(v) == "table" and type(target[k]) == "table" then
+            MergeConfig(target[k], v)
+        else
+            target[k] = v
+        end
+    end
+    return target
+end
+
+getgenv().CONFIG = getgenv().CONFIG or {}
+local CONFIG = MergeConfig(DEFAULT_CONFIG, getgenv().CONFIG)
+getgenv().CONFIG = CONFIG
 
 local function EnforceEndGameExclusivity()
     if CONFIG.EndGame.Hatch == true and CONFIG.EndGame.Boss == true then
-        warn("[CONFIG CẢNH BÁO] Cả Hatch = true và Boss = true đều được bật! Theo quy tắc 'chỉ chạy 1 trong 2', script sẽ ưu tiên Hatch = true và tắt Boss = false!")
+        warn("[CONFIG] Both Hatch and Boss enabled. Prioritizing Hatch=true, Boss=false.")
         CONFIG.EndGame.Boss = false
     end
 end
@@ -290,7 +277,6 @@ local BOSS_INFO = {
     },
 }
 
--- Tọa độ vị trí đứng trước 8 cửa nhà Trick-or-Treat (Street Zone - Zone 6)
 local HOUSE_SPOTS = {
     [1] = CFrame.new(7488.92, 19.86, 21913.65),
     [2] = CFrame.new(7487.50, 19.52, 22087.15),
@@ -298,15 +284,14 @@ local HOUSE_SPOTS = {
     [4] = CFrame.new(7534.00, 19.77, 22087.15),
     [5] = CFrame.new(7588.71, 19.36, 21913.50),
     [6] = CFrame.new(7577.75, 19.77, 22086.90),
-    [7] = CFrame.new(7635.46, 19.86, 21913.65), -- Huge Count Penguin
-    [8] = CFrame.new(7633.75, 19.52, 22087.15), -- Huge Count Penguin + Titanic Snoligoster
+    [7] = CFrame.new(7635.46, 19.86, 21913.65),
+    [8] = CFrame.new(7633.75, 19.52, 22087.15),
 }
 
 local PUMPKIN_SPOT = CFrame.new(6025.00, 13.70, 21998.50)
 
--- Tọa độ đứng trước các bệ trứng
 local EGG_STAND_CFRAMES = {
-    ["Manor Egg"] = CFrame.new(7537.25, 16.5, 21943.0),
+    ["Manor Egg"] = CFrame.new(7537.90, 16.21, 21962.36),
     ["Werewolf Egg"] = CFrame.new(7281.76, 16.5, 21943.0),
     ["Witching Egg"] = CFrame.new(6861.06, 16.5, 21943.0),
     ["Graveyard Egg"] = CFrame.new(6603.50, 16.5, 21943.0),
@@ -316,7 +301,6 @@ local EGG_STAND_CFRAMES = {
 
 local UPGRADE_MACHINE_CFRAME = CFrame.new(6392.99, 13.67, 22057.54)
 
--- Danh sách 13 nâng cấp sự kiện theo thứ tự ưu tiên (Part 2 xếp trước để tối ưu Blood Moon)
 local UPGRADES_LIST = {
     "HatchWarMoonLuck",
     "HatchWarAfterglow",
@@ -341,11 +325,6 @@ local TIER_COSTS = {
     [5] = 600,
 }
 
--- ============================================================================
--- 4. Bypasses, Anti-AFK, Real Player Bypass & 3-Layer Orb Vacuum
--- ============================================================================
-
--- 4.1. Ultra-Fast Global Orb Vacuum
 pcall(function()
     local OrbCmdsModule = Client and Client:FindFirstChild("OrbCmds")
     local OrbModule = OrbCmdsModule and OrbCmdsModule:FindFirstChild("Orb") and dynamicRequire(OrbCmdsModule.Orb)
@@ -353,9 +332,6 @@ pcall(function()
         SafePatch(OrbModule, "CollectDistance", 999999)
         SafePatch(OrbModule, "DefaultPickupDistance", 999999)
     end
-
-    -- Không hook EnchantCmds Magnet để tránh làm hỏng công thức bán kính nhặt HatchWarCmds.Orbs
-
 
     if Network and Network.Fired then
         AddConnection(Network.Fired("Orbs: Create"):Connect(function(data)
@@ -401,7 +377,6 @@ pcall(function()
     end)
 end)
 
--- 4.2. Anti-AFK 3 lớp
 pcall(function()
     local VirtualUser = game:GetService("VirtualUser")
 
@@ -432,11 +407,9 @@ pcall(function()
     end)
 end)
 
--- 4.3. Real Player Bypass (Hook RealPlayerCmds, Functions.IsRealPlayer & Network.Invoke)
 pcall(function()
     local hookfunc = hookfunction or replaceclosure
 
-    -- 1. Hook RealPlayerCmds.Check -> Luôn return true
     local RealPlayerCmds = LoadModule(Client, "RealPlayerCmds")
     if RealPlayerCmds and type(RealPlayerCmds.Check) == "function" then
         if hookfunc then
@@ -445,7 +418,6 @@ pcall(function()
         SafePatch(RealPlayerCmds, "Check", function() return true end)
     end
 
-    -- 2. Hook Functions.IsRealPlayer -> Luôn return true
     local Functions = LoadModule(Library, "Functions")
     if Functions and type(Functions.IsRealPlayer) == "function" then
         if hookfunc then
@@ -454,7 +426,6 @@ pcall(function()
         SafePatch(Functions, "IsRealPlayer", function(...) return true end)
     end
 
-    -- 3. Hook trực tiếp ModuleScript Library.Functions.IsRealPlayer
     pcall(function()
         local functionsFolder = Library:FindFirstChild("Functions")
         local isRealPlayerScript = functionsFolder and functionsFolder:FindFirstChild("IsRealPlayer")
@@ -466,7 +437,6 @@ pcall(function()
         end
     end)
 
-    -- 4. Hook Network.Invoke("Is Real Player") -> Luôn return true
     if Network and type(Network.Invoke) == "function" then
         local origInvoke = Network.Invoke
         if hookfunc then
@@ -488,7 +458,6 @@ pcall(function()
     end
 end)
 
--- 4.4. Pet Speed 999 Hook
 pcall(function()
     local PlayerPet = LoadModule(Client, "PlayerPet")
     local CustomPet = LoadModule(Client, "CustomPet")
@@ -510,12 +479,10 @@ pcall(function()
             end
         end
 
-        -- Áp dụng cho toàn bộ pet hiện có
         for _, pet in pairs(PlayerPet.GetAll()) do
             ApplySpeedToPet(pet)
         end
 
-        -- Lắng nghe pet mới sinh ra
         if PlayerPet.Created and PlayerPet.Created.Connect then
             AddConnection(PlayerPet.Created:Connect(function(pet)
                 task.defer(function()
@@ -534,7 +501,6 @@ pcall(function()
     end
 end)
 
--- 4.5. Auto Ultimate Engine (Lắng nghe .Changed & Tự kích hoạt ngay khi đạt 100%)
 pcall(function()
     local function TryUseUltimate()
         if not CONFIG.AutoUltimate or not UltimateCmds then return end
@@ -553,12 +519,11 @@ pcall(function()
                 return UltimateCmds.Activate(ultId)
             end)
             if ok and res then
-                -- print(string.format("[ultimate] ⚡ Ultimate [%s] đạt 100%%! Tự động kích hoạt thành công!", tostring(ultId)))
+
             end
         end
     end
 
-    -- Trigger 1: Lắng nghe sự kiện .Changed của Save Cooldown từ Server
     if SaveMod and SaveMod.GetStatChangedSignal then
         pcall(function()
             local ultSignal = SaveMod.GetStatChangedSignal("UltimateCooldowns")
@@ -572,7 +537,6 @@ pcall(function()
         end)
     end
 
-    -- Trigger 2: Fast Watcher chạy nền (chu kỳ 0.5s) đảm bảo không trễ nhịp nạp đầy
     task.spawn(function()
         while Running() do
             if CONFIG.AutoUltimate then
@@ -583,15 +547,12 @@ pcall(function()
     end)
 end)
 
--- 4.6. Silent Fast Hatch Engine (Triệt tiêu toàn bộ Model Trứng 3D & Ẩn hoàn toàn UI Kết Quả Mở Trứng)
 pcall(function()
     local function ApplySilentHatch()
         if not CONFIG.SilentHatch then return end
 
         local things = workspace:FindFirstChild("__THINGS")
 
-        -- 1. Triệt tiêu toàn bộ Model trứng nở trong Workspace (__THINGS.Eggs & __THINGS.RenderedEggs)
-        -- Xóa sạch các Model "Egg Capsule" che kín camera
         local function CleanFolder(folder)
             if not folder then return end
             for _, child in ipairs(folder:GetChildren()) do
@@ -611,7 +572,6 @@ pcall(function()
         CleanFolder(things and things:FindFirstChild("Eggs"))
         CleanFolder(things and things:FindFirstChild("RenderedEggs"))
 
-        -- 2. Ẩn & Xóa toàn bộ UI kết quả mở trứng (EggOpenAnimation ScreenGui)
         local pGui = LocalPlayer:FindFirstChild("PlayerGui")
         local eggOpenGui = pGui and pGui:FindFirstChild("EggOpenAnimation")
         if eggOpenGui then
@@ -628,8 +588,6 @@ pcall(function()
             end))
         end
 
-        -- 3. Intercept & Bypass "Eggs_PlayOpenAnimation" của Egg Opening Frontend:
-        -- Ngăn chặn triệt để việc render grid 88 quả trứng, đồng thời Unmask pet ngay lập tức
         local EggAnimPayload = LoadModule(Library, "Util.EggAnimPayload")
         local Signal = LoadModule(Library, "Signal")
 
@@ -659,7 +617,6 @@ pcall(function()
                         end
                     end
 
-                    -- Báo game unmask pet vào kho đồ ngay lập tức (0ms delay, không render model)
                     if #uids > 0 and Network.Fire then
                         Network.Fire("SM_Unmask", uids)
                     end
@@ -670,7 +627,6 @@ pcall(function()
             end)
         end
 
-        -- 4. Khóa camera người chơi không bị kéo/zoom vào trứng khi hatch
         AddConnection(workspace.CurrentCamera:GetPropertyChangedSignal("CameraType"):Connect(function()
             if CONFIG.SilentHatch and workspace.CurrentCamera.CameraType ~= Enum.CameraType.Custom then
                 workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
@@ -681,10 +637,6 @@ pcall(function()
     ApplySilentHatch()
 end)
 
--- ============================================================================
--- 5. Helper Functions
--- ============================================================================
-
 local function GetCharacter()
     return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 end
@@ -694,7 +646,7 @@ local function GetHRP()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
-local function SafeTeleport(targetPos)
+local function SafeTeleport(targetPos, keepAnchored)
     local hrp = GetHRP()
     if not hrp or not targetPos then return end
 
@@ -707,9 +659,17 @@ local function SafeTeleport(targetPos)
 
     local currentDist = (hrp.Position - targetCF.Position).Magnitude
     if currentDist > 2.5 then
-        hrp.Anchored = false
         hrp.CFrame = targetCF
-        task.wait(0.3)
+        if keepAnchored then
+            hrp.Anchored = true
+            pcall(function()
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+        else
+            hrp.Anchored = false
+        end
+        task.wait(0.2)
     end
 end
 
@@ -731,7 +691,7 @@ local function GetCurrentMaxUnlockedZone()
     if InstanceZoneCmds and InstanceZoneCmds.GetMaximumOwnedZoneNumber then
         return InstanceZoneCmds.GetMaximumOwnedZoneNumber() or 1
     end
-    -- Fallback check từng zone (Zone 1 -> 6)
+
     if InstanceZoneCmds and InstanceZoneCmds.IsUnlocked then
         for z = 6, 1, -1 do
             if InstanceZoneCmds.IsUnlocked(z) then
@@ -740,6 +700,12 @@ local function GetCurrentMaxUnlockedZone()
         end
     end
     return 1
+end
+
+local function IsMaxZoneUnlocked()
+    local maxZone = GetCurrentMaxUnlockedZone()
+    local targetZone = CONFIG.EndGame.TargetZone or 6
+    return maxZone >= targetZone
 end
 
 local function IsActuallyInHatchWar()
@@ -756,7 +722,6 @@ local function IsActuallyInHatchWar()
         return false
     end
 
-    -- Đã ở trong Instance HatchWar: Kiểm tra map container để đảm bảo world đã replicate
     local things = workspace:FindFirstChild("__THINGS")
     local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
     local active = container and container:FindFirstChild("Active")
@@ -769,7 +734,7 @@ local function IsActuallyInHatchWar()
 end
 
 local function EnsureInHatchWar()
-    -- 1. Nếu đã ở trong Event và map đã tải hoàn tất: Trả về true ngay lập tức
+
     if IsActuallyInHatchWar() then
         return true
     end
@@ -778,12 +743,11 @@ local function EnsureInHatchWar()
         InstancingCmds = LoadModule(Client, "InstancingCmds")
     end
 
-    -- Bảo vệ: Nếu InstancingCmds đã ghi nhận đang ở trong HatchWar, không gọi TriggerJoin tránh server reset map
     if InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance() and InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID() == "HatchWar" then
         return true
     end
 
-    print("[event] 🚀 Chưa ở trong Event HatchWar! Đang tiến hành tham gia Event...")
+    print("[event] Joining HatchWar...")
 
     local function TriggerJoin()
         pcall(function()
@@ -800,7 +764,6 @@ local function EnsureInHatchWar()
 
     TriggerJoin()
 
-    -- 2. Vòng lặp chờ nạp bản đồ và đồng bộ nhân vật vào Event (Timeout 15 giây)
     local waitJoin = os.clock()
     local retried = false
     while Running() and (os.clock() - waitJoin < 15) do
@@ -814,13 +777,12 @@ local function EnsureInHatchWar()
         end
     end
 
-    -- 3. Kiểm tra kết quả
     if IsActuallyInHatchWar() then
-        task.wait(1.0) -- Đợi server và client đồng bộ ổn định
-        print("[event] ✅ ĐÃ THAM GIA EVENT HATCHWAR THÀNH CÔNG (Bản đồ & Zones đã sẵn sàng)! Trả về true.")
+        task.wait(1.0)
+        print("[event] Joined HatchWar successfully (map ready).")
         return true
     else
-        warn("[event] ⚠️ Tham gia Event HatchWar thất bại hoặc chưa tải xong bản đồ!")
+        warn("[event] Failed to join HatchWar or map not loaded.")
         return false
     end
 end
@@ -840,18 +802,15 @@ local function InstallMissBypass(inst)
     RegisterPatch(inst, "FireCustom", rawFire)
 end
 
--- ============================================================================
--- 5.5. Breakables Coin Farming Engine
--- ============================================================================
 local function HasAutoFarmGamepass()
-    -- 1. Check trực tiếp Client.Gamepasses.Owns("Auto Farm")
+
     local Gamepasses = LoadModule(Client, "Gamepasses")
     if Gamepasses and Gamepasses.Owns then
         local ok, owns = pcall(Gamepasses.Owns, "Auto Farm")
         if ok and owns == true then
             return true
         end
-        -- Thử với table entry nếu có require Directory.Gamepasses
+
         local GamepassesDir = LoadModule(Directory, "Gamepasses")
         if GamepassesDir then
             local okEntry, gpEntry = pcall(function() return GamepassesDir["Auto Farm"] end)
@@ -864,13 +823,11 @@ local function HasAutoFarmGamepass()
         end
     end
 
-    -- 2. Check Instance Config (chuẩn từ AutoFarmCmds: InstancingCmds.Get().config.FreeAutoFarm)
     local inst = InstancingCmds and InstancingCmds.Get and InstancingCmds.Get()
     if inst and inst.config and inst.config.FreeAutoFarm == true then
         return true
     end
 
-    -- 3. Check Save Data fallback
     local save = (SaveMod and SaveMod.Get and SaveMod.Get()) or (Saving and Saving.Get and Saving.Get())
     if save and save.Gamepasses then
         local GamepassesDir = LoadModule(Directory, "Gamepasses")
@@ -883,12 +840,10 @@ local function HasAutoFarmGamepass()
     return false
 end
 
--- Helper tìm Part mặt đất thực tế của Zone (An toàn tuyệt đối cho mọi loại Instance)
 local function GetZoneGroundPart(zoneNum)
     local zNum = tonumber(zoneNum) or 6
     local things = workspace:FindFirstChild("__THINGS")
-    
-    -- 1. Ưu tiên tìm trong __FAKE_INSTANCE_BREAK_ZONES (Part chuẩn)
+
     local fakeBreakZones = things and things:FindFirstChild("__FAKE_INSTANCE_BREAK_ZONES")
     if fakeBreakZones then
         for _, folder in ipairs(fakeBreakZones:GetChildren()) do
@@ -899,7 +854,6 @@ local function GetZoneGroundPart(zoneNum)
         end
     end
 
-    -- 2. Tìm trong ZONE_GROUND của Event Model
     local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
     local active = container and container:FindFirstChild("Active")
     local hw = active and active:FindFirstChild("HatchWar")
@@ -911,7 +865,6 @@ local function GetZoneGroundPart(zoneNum)
         end
     end
 
-    -- 3. Fallback lấy Part con bên trong breakableZones
     local inst = GetHatchWarInstance()
     local bz = inst and inst.breakableZones and inst.breakableZones:FindFirstChild("Zone" .. tostring(zNum))
     if bz then
@@ -935,7 +888,7 @@ local function GetZoneGroundCFrame(zoneNum)
             return p:GetPivot() + Vector3.new(0, 3, 0)
         end
     end
-    -- Fallback tọa độ gốc Zone 6 chuẩn
+
     if tonumber(zoneNum) == 6 then
         return CFrame.new(7540.8, 16.5, 21998.2)
     end
@@ -949,9 +902,12 @@ local function EnsureAutoFarmActiveAtZone(zoneNum)
         return false
     end
 
+    if not IsMaxZoneUnlocked() then
+        return false
+    end
+
     local targetZone = tonumber(zoneNum) or 6
 
-    -- Nếu AutoFarm đã bật và đúng zone thì không cần kích hoạt lại
     if AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() then
         if lastAutoFarmZone == targetZone then
             return true
@@ -959,15 +915,21 @@ local function EnsureAutoFarmActiveAtZone(zoneNum)
     end
 
     local targetCF = GetZoneGroundCFrame(targetZone)
-    print(string.format("[auto farm] 🚀 Kích hoạt Auto Farm tại bãi Zone %d...", targetZone))
-    SafeTeleport(targetCF)
+    print(string.format("[auto farm] Enabling Zone %d...", targetZone))
 
-    -- Mở neo để physics character cập nhật lên server
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if hrp then hrp.Anchored = false end
+    if hrp then
+        hrp.CFrame = targetCF
+        hrp.Anchored = true
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    else
+        SafeTeleport(targetCF, true)
+    end
     task.wait(0.3)
 
-    -- Gọi Enable qua Module chính thống của Client
     pcall(function()
         if AutoFarmCmds and AutoFarmCmds.Enable then
             AutoFarmCmds.Enable()
@@ -976,10 +938,9 @@ local function EnsureAutoFarmActiveAtZone(zoneNum)
         end
     end)
 
-    -- Chờ xác nhận thực tế từ Client State (polling timeout 1.2s)
     local startTime = os.clock()
     local success = false
-    while os.clock() - startTime < 1.2 do
+    while os.clock() - startTime < 1.5 do
         if AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() then
             success = true
             break
@@ -987,12 +948,17 @@ local function EnsureAutoFarmActiveAtZone(zoneNum)
         task.wait(0.1)
     end
 
+    hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Anchored = false
+    end
+
     if success then
         lastAutoFarmZone = targetZone
-        print(string.format("[auto farm] ✅ Đã kích hoạt Auto Farm thành công tại Zone %d!", targetZone))
+        print(string.format("[auto farm] Zone %d enabled (true).", targetZone))
         return true
     else
-        print(string.format("[auto farm] ⚠️ Kích hoạt Auto Farm tại Zone %d chưa thành công (Server chưa xác nhận vị trí).", targetZone))
+        print(string.format("[auto farm] Zone %d failed (server unconfirmed).", targetZone))
         return false
     end
 end
@@ -1008,10 +974,10 @@ local function GetRecommendedTargetCoins(zoneNum)
     end
 
     if recCoins <= 0 then
-        local fallbackCoins = { 
-            [1] = 30000, 
-            [2] = 210000, 
-            [3] = 1470000, 
+        local fallbackCoins = {
+            [1] = 30000,
+            [2] = 210000,
+            [3] = 1470000,
             [4] = 14700000,
             [5] = 102900000,
             [6] = 720300000,
@@ -1036,7 +1002,25 @@ local function GetLocalPets()
     return pets
 end
 
--- Hàm lấy danh sách breakables hợp lệ trong Zone (Bán kính 85 studs chuẩn xác từ tâm bãi hoặc khớp AreaID)
+local function IsChestBreakable(b)
+    if not b or not b:IsA("Model") or not b.Parent then return false end
+    local bId = b:GetAttribute("BreakableID")
+    if bId and string.find(string.lower(bId), "chest") then
+        return true
+    end
+    local bCls = b:GetAttribute("BreakableClass")
+    if bCls and string.find(string.lower(bCls), "chest") then
+        return true
+    end
+    if b:GetAttribute("CandyChest") == true then
+        return true
+    end
+    if string.find(string.lower(b.Name), "chest") then
+        return true
+    end
+    return false
+end
+
 local function GetZoneBreakables(zoneNum)
     local valid = {}
     local things = workspace:FindFirstChild("__THINGS")
@@ -1061,14 +1045,19 @@ local function GetZoneBreakables(zoneNum)
         end
     end
 
+    if CONFIG.League and CONFIG.League.PrioritizeChests and #valid > 1 then
+        table.sort(valid, function(a, b)
+            local aIs = IsChestBreakable(a)
+            local bIs = IsChestBreakable(b)
+            if aIs and not bIs then return true end
+            if not aIs and bIs then return false end
+            return false
+        end)
+    end
+
     return valid
 end
 
--- ============================================================================
--- SMART TARGET-FOCUSED AUTO TAP ENGINE (14Hz)
--- ============================================================================
--- Focus-fire dứt điểm từng breakable một ở tốc độ ~14 taps/giây (chuẩn game client),
--- tránh flood UnreliableRemoteEvent buffer và đảm bảo không bị server drop packet.
 local function StartAutoTapWorker(getZoneOrZoneNum, isRunningCheck)
     local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
     if not netDamage then return end
@@ -1080,14 +1069,19 @@ local function StartAutoTapWorker(getZoneOrZoneNum, isRunningCheck)
             local hrp = GetHRP()
             local pPos = hrp and hrp.Position
 
-            -- Kiểm tra target hiện tại còn sống và tồn tại không
             if not currentTarget or not currentTarget.Parent or not currentTarget:IsA("Model") then
                 currentTarget = nil
                 local valid = GetZoneBreakables(zone)
                 if #valid > 0 then
-                    -- Ưu tiên breakable gần nhân vật nhất để chắc chắn server chấp nhận hit
+
                     if pPos then
                         table.sort(valid, function(a, b)
+                            if CONFIG.League and CONFIG.League.PrioritizeChests then
+                                local aIs = IsChestBreakable(a)
+                                local bIs = IsChestBreakable(b)
+                                if aIs and not bIs then return true end
+                                if not aIs and bIs then return false end
+                            end
                             local pA = a:GetPivot()
                             local pB = b:GetPivot()
                             local distA = pA and (pA.Position - pPos).Magnitude or 9999
@@ -1099,7 +1093,6 @@ local function StartAutoTapWorker(getZoneOrZoneNum, isRunningCheck)
                 end
             end
 
-            -- Focus fire dứt điểm target đã chọn bằng Signal native (tương thích 100% client) hoặc remote fallback
             if currentTarget and currentTarget.Parent then
                 if SignalMod and SignalMod.Fire then
                     SignalMod.Fire("AutoClicker_Nearby", currentTarget.Name)
@@ -1108,7 +1101,7 @@ local function StartAutoTapWorker(getZoneOrZoneNum, isRunningCheck)
                 end
             end
 
-            task.wait(0.07) -- ~14Hz chuẩn nhịp Swift Taps
+            task.wait(0.07)
         end
     end)
 end
@@ -1117,12 +1110,15 @@ local function FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
     local targetZone = zoneNum or 6
     local targetCF = GetZoneGroundCFrame(targetZone)
 
+    if CONFIG.EndGame.Hatch == true and targetZone == (CONFIG.EndGame.TargetZone or 6) then
+        targetCF = EGG_STAND_CFRAMES[CONFIG.EndGame.EggName or "Manor Egg"] or (CONFIG.EndGame.EggSpot and CFrame.new(CONFIG.EndGame.EggSpot)) or CFrame.new(7537.90, 16.21, 21962.36)
+    end
+
     local hasPass = HasAutoFarmGamepass()
     local targetPct = recCoins and recCoins > 0 and ((targetCoins / recCoins) * 100) or 90
-    print(string.format("[auto map] 💰 Bắt đầu cày Coin (Hiện có: %s/%s - Cần >= %.0f%%) tại bãi Zone %d...", 
+    print(string.format("[auto map] Farming coins: %s / %s (Zone %d)",
         FormatNumber(GetCoins()), FormatNumber(targetCoins), targetPct, targetZone))
 
-    -- Teleport ra giữa bãi Zone và neo nhẹ
     SafeTeleport(targetCF)
     task.wait(0.25)
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -1131,13 +1127,11 @@ local function FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
     local farmStart = os.clock()
     local lastPrint = os.clock()
 
-    -- Worker 1: Target-Focused Auto Tap Engine (14Hz)
     local autoTapActive = true
     StartAutoTapWorker(targetZone, function()
         return autoTapActive and GetCoins() < targetCoins
     end)
 
-    -- Worker 2: Smart Pet Auto-Dispatcher
     while Running() and GetCoins() < targetCoins and (os.clock() - farmStart < 90) do
         local valid = GetZoneBreakables(targetZone)
         local pets = GetLocalPets()
@@ -1161,7 +1155,7 @@ local function FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
             lastPrint = os.clock()
             local cur = GetCoins()
             local pct = targetCoins > 0 and (cur / targetCoins * 100) or 0
-            print(string.format("[auto map] 💰 Đang cày coin... %s / %s (%.1f%%) [Speed: 999]", 
+            print(string.format("[auto map] Coins: %s / %s (%.1f%%)",
                 FormatNumber(cur), FormatNumber(targetCoins), pct))
         end
     end
@@ -1173,7 +1167,7 @@ local function FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
     if hrp then hrp.Anchored = false end
 
     if finalCoins >= targetCoins then
-        print(string.format("[auto map] ✅ ĐÃ ĐẠT MỤC TIÊU COIN (%s / %s)! Chuẩn bị bước tiếp theo...", 
+        print(string.format("[auto map] Coin target reached: %s / %s",
             FormatNumber(finalCoins), FormatNumber(targetCoins)))
     end
 
@@ -1187,10 +1181,6 @@ local function EnsureSufficientCoins(targetCoins, recCoins, zoneNum)
     return FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
 end
 
--- ============================================================================
--- 6. Combat Engine (Diệt Boss bất kỳ theo Zone 1 -> 4)
--- ============================================================================
--- 5.1. Thu dọn khẩn cấp và giải phóng Lock giao diện sau trận Boss
 local function ForceCleanupBossFight(keepAnchored)
     pcall(function()
         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -1225,7 +1215,6 @@ local function ForceCleanupBossFight(keepAnchored)
     end)
 end
 
--- 5.2. Quét nhặt toàn bộ Lucky Orbs trên sân để tích Luck trước Boss Fight
 local function SweepLuckyOrbs(targetBankRatio)
     targetBankRatio = targetBankRatio or 0.85
     local OrbsCmd = LoadModule(Client, "HatchWarCmds") and LoadModule(Client.HatchWarCmds, "Orbs")
@@ -1241,7 +1230,7 @@ local function SweepLuckyOrbs(targetBankRatio)
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    print(string.format("[auto map] 🔮 Quét Lucky Orbs để boost Luck... Hiện có: %d/%d (Mục tiêu: %d)", curBank, maxBank, target))
+    print(string.format("[auto map] Sweeping Orbs: %d / %d (target: %d)", curBank, maxBank, target))
     local oldPos = hrp.CFrame
     local sweepStart = os.clock()
 
@@ -1263,7 +1252,7 @@ local function SweepLuckyOrbs(targetBankRatio)
                 if orb and orb.Position then
                     foundAny = true
                     SafeTeleport(CFrame.new(orb.Position + Vector3.new(0, 1.5, 0)))
-                    task.wait(0.18) -- Đợi server physics replicate vị trí
+                    task.wait(0.18)
                     pcall(function()
                         inst:InvokeCustom("HW_Orbs_Claim", id)
                     end)
@@ -1279,7 +1268,7 @@ local function SweepLuckyOrbs(targetBankRatio)
     SafeTeleport(oldPos)
     task.wait(0.2)
     local endBank = OrbsCmd.Bank()
-    print(string.format("[auto map] ✅ Hoàn tất quét Orbs! Bank: %d/%d (+%.0f Luck)", endBank, maxBank, endBank * 1.5))
+    print(string.format("[auto map] Orbs complete: %d / %d", endBank, maxBank, endBank * 1.5))
 end
 
 local totalFights = 0
@@ -1302,7 +1291,6 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
 
     InstallMissBypass(inst)
 
-    -- Kiểm tra coin:
     local targetCoins, fullRecCoins, recLuck = GetRecommendedTargetCoins(zoneNum)
     if not skipCoinCheck then
         if not EnsureSufficientCoins(targetCoins, fullRecCoins, zoneNum) then
@@ -1314,13 +1302,12 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
         end
     end
 
-    -- BẢO VỆ GAMEPASS: Acc có gp chỉ được bật isFightingBoss khi Auto Farm đã thực sự đặt xong (res == true)
-    if HasAutoFarmGamepass() then
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
         local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
         if not afReady or lastAutoFarmZone ~= zoneNum then
             local afOk = EnsureAutoFarmActiveAtZone(zoneNum)
             if not afOk then
-                warn(string.format("[auto boss] ⚠️ Chưa kích hoạt xong Auto Farm tại Zone %d (res: false) -> Hoãn trận Boss!", zoneNum))
+                warn(string.format("[auto boss] Zone %d AutoFarm not ready -> Delay boss.", zoneNum))
                 return false
             end
         end
@@ -1328,7 +1315,6 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
 
     runState.isFightingBoss = true
 
-    -- Đứng tại vị trí Idle của Boss
     local bossSpot = info.Spot
     local bFolder = inst.model and inst.model:FindFirstChild("INTERACT")
         and inst.model.INTERACT:FindFirstChild("Bosses")
@@ -1346,12 +1332,10 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
     hrp = GetHRP()
     if hrp then hrp.Anchored = true end
 
-    -- Đặt FlameStop
     pcall(function()
         inst:InvokeCustom("HW_Contests_SetFlameStop", 3)
     end)
 
-    -- Bắt đầu trận đánh
     if not BossModule.IsFighting() then
         local ok, err = inst:InvokeCustom("HW_Boss_Start", zoneNum)
         if not ok and tostring(err) ~= "You are already in a boss fight!" then
@@ -1374,10 +1358,9 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
     totalFights = totalFights + 1
     local inEvent = (InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance() and InstancingCmds.GetInstanceID() == "HatchWar") == true
     local curCoins = GetCoins()
-    print(string.format("[auto map] Zone %d || Round: %d || Boss: %s || Coins: %s || event: %s || cycle: %d", 
+    print(string.format("[auto map] Zone %d || Round: %d || Boss: %s || Coins: %s || event: %s || cycle: %d",
         zoneNum, totalFights, info.Name, FormatNumber(curCoins), tostring(inEvent), currentCycle))
 
-    -- Dọn sạch UI gợi ý
     local pGui = LocalPlayer:FindFirstChild("PlayerGui")
     local instancesFolder = pGui and pGui:FindFirstChild("_INSTANCES")
     local bossGui = instancesFolder and instancesFolder:FindFirstChild("HatchWarBoss")
@@ -1389,9 +1372,8 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
     end
 
     local fightStart = os.clock()
-    local maxFightDuration = 28 -- Hard Timeout trần tối đa (trận server 25s)
+    local maxFightDuration = 28
 
-    -- Worker 1: Circle Annihilator (50Hz)
     task.spawn(function()
         while Running() and BossModule.IsFighting() and (os.clock() - fightStart < maxFightDuration) do
             if GetCoins() <= 0 then break end
@@ -1408,17 +1390,15 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
         end
     end)
 
-    -- Worker 2: Turbo Egg Tapper (20 taps/s) với Hard Timeout và Coin Guard
     while Running() and BossModule.IsFighting() do
-        -- 1. Hard Timeout Guard: Chặn vĩnh viễn nguy cơ kẹt vô tận
+
         if os.clock() - fightStart >= maxFightDuration then
-            print("[auto map] ⚠️ Boss fight chạm trần thời gian (28s) -> Thoát an toàn")
+            print("[auto map] Boss timeout (28s) -> Exit.")
             break
         end
 
-        -- 2. Coin Floor Guard: Phát hiện hết coin để thoát ngay
         if GetCoins() <= 0 then
-            print("[auto map] ⚠️ Hết coin trong trận đánh -> Thoát combat để quay lại farm")
+            print("[auto map] Out of coins in boss -> Exit to farm.")
             break
         end
 
@@ -1432,7 +1412,6 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
         task.wait(0.05)
     end
 
-    -- Kết thúc hiệp: nếu skipCoinCheck (đánh liên tục/có autofarm) thì giảm delay tối đa và giữ neo
     if skipCoinCheck then
         task.wait(0.35)
         ForceCleanupBossFight(true)
@@ -1444,10 +1423,6 @@ local function FightBossAtZone(zoneNum, skipCoinCheck)
     return true
 end
 
--- ============================================================================
--- ============================================================================
--- 7. Auto Upgrade Manager (HatchWarUpgradeMachine - Optimized)
--- ============================================================================
 local function GetWandCount()
     local MiscItem = LoadModule(Library, "Items") and LoadModule(Library.Items, "MiscItem")
     if MiscItem then
@@ -1492,7 +1467,6 @@ local function GetLollipopCount()
     return 0
 end
 
-
 local function GetMachinePad()
     local things = workspace:FindFirstChild("__THINGS")
     local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
@@ -1522,7 +1496,6 @@ local function CheckAndBuyUpgrades(force)
     end
     if not UpgradesMod or not UpgradesMod.Tracks then return false end
 
-    -- 1. Kiểm tra chính xác 100% bằng logic game: Có bất kỳ upgrade nào CanAfford() không?
     local affordableTracks = {}
     for _, track in ipairs(UpgradesMod.Tracks()) do
         if UpgradesMod.CanAfford and UpgradesMod.CanAfford(track) then
@@ -1530,29 +1503,24 @@ local function CheckAndBuyUpgrades(force)
         end
     end
 
-    -- NẾU KHÔNG CÓ BẤT KỲ NÂNG CẤP NÀO ĐỦ TIỀN MUA THÌ TUYỆT ĐỐI KHÔNG TELEPORT!
     if #affordableTracks == 0 then
         return false
     end
 
-    -- 2. Ghi nhớ vị trí và trạng thái Anchor hiện tại
     local hrp = GetHRP()
     local returnCF = hrp and hrp.CFrame
     local wasAnchored = hrp and hrp.Anchored
 
-    -- 3. Teleport đến đúng vị trí Pad của máy
     local machinePos = GetMachinePad()
     SafeTeleport(machinePos)
     task.wait(0.35)
 
-    -- Đánh dấu Approached để server ghi nhận
     pcall(function()
         if Network and Network.Fire then
             Network.Fire("Machines: Mark Approached", "HatchWarUpgradeMachine")
         end
     end)
 
-    -- 4. Batch Purchase: Mua lần lượt các upgrades đủ điều kiện
     local totalBought = 0
     for _, track in ipairs(affordableTracks) do
         local ok = false
@@ -1569,7 +1537,6 @@ local function CheckAndBuyUpgrades(force)
         end
     end
 
-    -- Đóng GUI nếu bị mở
     pcall(function()
         local TabController = LoadModule(Client, "TabController")
         if TabController and TabController.CloseTab then
@@ -1577,7 +1544,6 @@ local function CheckAndBuyUpgrades(force)
         end
     end)
 
-    -- 5. Lập tức quay lại vị trí cũ và khôi phục hoạt động chiến đấu ngay, không để trễ damage
     if returnCF then
         SafeTeleport(returnCF)
         task.wait(0.15)
@@ -1586,7 +1552,6 @@ local function CheckAndBuyUpgrades(force)
             curHrp.Anchored = true
         end
 
-        -- Phân phối lại ngay lập tức cho 15 pets và tap ngay để gây damage liên tục
         task.defer(function()
             local valid = GetZoneBreakables(CONFIG.EndGame.TargetZone or 6)
             local pets = GetLocalPets()
@@ -1608,7 +1573,6 @@ local function CheckAndBuyUpgrades(force)
     return totalBought > 0
 end
 
--- 7.3. Tự động mua tối đa Egg Slots tại EggSlotsMachine khi đủ Diamonds & Rank
 local function CheckAndBuyEggSlots()
     if not CONFIG.AutoBuyEggSlots then return end
     pcall(function()
@@ -1643,8 +1607,7 @@ local function CheckAndBuyEggSlots()
                 if diamonds >= cost then
                     local success = Network.Invoke("EggHatchSlotsMachine_RequestPurchase", bundleEnd)
                     if success then
-                        -- print(string.format("[egg slots] 🛒 Đã mua thành công +%d Egg Slot (Bundle %d) với %s Diamonds!", 
-                        --     bundleSize, bundleEnd, FormatNumber(cost)))
+
                         purchased = bundleEnd
                         nextSlot = bundleEnd + 1
                         task.wait(0.2)
@@ -1652,16 +1615,13 @@ local function CheckAndBuyEggSlots()
                         break
                     end
                 else
-                    break -- Không đủ Diamonds
+                    break
                 end
             end
         end
     end)
 end
 
--- ============================================================================
--- 8. Blood Moon & Street Doors & Pumpkin Engine
--- ============================================================================
 local function GetBloodMoonState()
     if HatchWarMoon and HatchWarMoon.State then
         local ok, s = pcall(HatchWarMoon.State)
@@ -1678,9 +1638,6 @@ local function GetBloodMoonNextRise()
     return nil
 end
 
--- ============================================================================
--- 7.5. Auto Event Boosters (Lucky Spell for Boss, Soul Lantern for Hatch)
--- ============================================================================
 local lastBoosterCheck = 0
 local lastSpellUsedRound = -1
 local function AutoUseEventBoosters()
@@ -1694,7 +1651,6 @@ local function AutoUseEventBoosters()
     local inventory = (save.Inventory and save.Inventory.Consumable) or {}
     local Bursts = LoadModule(Util, "HatchWarBursts")
 
-    -- Helper tìm item trong túi: ưu tiên dùng Tier 1 trước để tiết kiệm Tier cao
     local function FindConsumable(targetId)
         local candidates = {}
         for uid, item in pairs(inventory) do
@@ -1708,16 +1664,13 @@ local function AutoUseEventBoosters()
         return candidates[1]
     end
 
-    -- CHẾ ĐỘ 1: ĐÁNH BOSS (EndGame.Boss == true hoặc đang trong boss battle)
-    -- Sử dụng: "Lucky Spell" (x2/x3 Luck cho Win Chance & mọi trứng nở trong Boss)
-    -- Spell nạp cho TRẬN BOSS TIẾP THEO -> Chỉ dùng 1 lần cho mỗi hiệp đánh boss (tránh spam lặp lại)
     if CONFIG.EndGame.Boss == true or runState.isFightingBoss == true then
         local currentFightNum = totalFights or 0
         if currentFightNum ~= lastSpellUsedRound then
             lastSpellUsedRound = currentFightNum
             local item = FindConsumable("Lucky Spell")
             if item then
-                print(string.format("[booster] 🔮 Tự động dùng 'Lucky Spell' (Tier %d) cho Boss Fight! (Còn trong kho: %d)", 
+                print(string.format("[booster] Used Lucky Spell (Tier %d) [left: %d]",
                     item.tier, item.amount))
                 pcall(function()
                     Network.Invoke("Consumables_Consume", item.uid, 1)
@@ -1726,15 +1679,12 @@ local function AutoUseEventBoosters()
         end
     end
 
-    -- CHẾ ĐỘ 2: MỞ TRỨNG (EndGame.Hatch == true hoặc đang trong chu kỳ hatch)
-    -- Sử dụng: "Soul Lantern" (Internal ID: "Lucky Brew", x3/x5 Luck cho toàn bộ trứng Hatch Wars)
-    -- Brew kéo dài theo thời gian (60s mỗi lần) -> Chỉ dùng khi chưa có buff hoặc hết thời gian
     if CONFIG.EndGame.Hatch == true or runState.isHatching == true then
         local brewTier = Bursts and Bursts.BestArmed and Bursts.BestArmed(LocalPlayer, "Brew") or 0
         if brewTier == 0 then
             local item = FindConsumable("Lucky Brew")
             if item then
-                print(string.format("[booster] 🏮 Tự động thắp 'Soul Lantern' (Tier %d) cho Hatching! (Còn trong kho: %d)", 
+                print(string.format("[booster] Used Soul Lantern (Tier %d) [left: %d]",
                     item.tier, item.amount))
                 pcall(function()
                     Network.Invoke("Consumables_Consume", item.uid, 1)
@@ -1744,9 +1694,6 @@ local function AutoUseEventBoosters()
     end
 end
 
--- ============================================================================
--- 7.6. Auto Flexible Flags Engine (Fortune Flag / Coins Flag Max Slots)
--- ============================================================================
 local lastFlagCheck = 0
 
 local function GetCurrentFlagContext()
@@ -1788,14 +1735,13 @@ local function PlaceFlagMaxSlots(flagId, uid, amount)
     local originalCF = hrp and hrp.CFrame
     local wasAnchored = hrp and hrp.Anchored
 
-    -- Server bắt buộc nhân vật phải unanchored và đứng bên trong bãi breakables (IsInDottedBox)
     local inBox = MapCmdsMod and MapCmdsMod.IsInDottedBox and MapCmdsMod.IsInDottedBox()
     if not inBox or wasAnchored then
         if hrp then
             hrp.Anchored = false
             hrp.CFrame = farmCF
         end
-        task.wait(0.4) -- Đợi replication physics đồng bộ vị trí lên server
+        task.wait(0.4)
     end
 
     local ok, res = pcall(function()
@@ -1803,12 +1749,11 @@ local function PlaceFlagMaxSlots(flagId, uid, amount)
     end)
 
     if ok and res ~= false then
-        print(string.format("[flags] 🚩 Đã cắm thành công %d x '%s' (Max Slots)! Tiếp tục farm...", amount, flagId))
+        print(string.format("[flags] Placed %d x %s", amount, flagId))
     else
-        warn(string.format("[flags] ⚠️ Cắm cờ '%s' thất bại: %s", flagId, tostring(res)))
+        warn(string.format("[flags] Place %s failed: %s", flagId, tostring(res)))
     end
 
-    -- Khôi phục vị trí cũ nếu trước đó đang ở vị trí khác (như Boss spot hoặc Egg spot)
     if not inBox and originalCF and hrp then
         hrp.CFrame = originalCF
         task.wait(0.15)
@@ -1838,13 +1783,12 @@ local function AutoManageFlags()
     local now = workspace:GetServerTimeNow()
     local timeLeft = activeFlag and (activeFlag.EndTime - now) or 0
 
-    -- TRƯỜNG HỢP 1: TRÊN MAP ĐANG CÓ CỜ ACTIVE (timeLeft > 0)
     if activeFlag and timeLeft > 0 then
         local activeId = activeFlag.FlagId
-        -- Nếu cờ đang cắm là Fortune Flag hoặc Coins Flag:
+
         if activeId == "Fortune Flag" or activeId == "Coins Flag" then
             local slotsNeeded = FlexibleFlagCmds.GetMaxPlace and FlexibleFlagCmds.GetMaxPlace(activeId, pType, pId, aId) or 0
-            -- Nếu còn thiếu slots để đạt Max Slots: Cắm nốt 1 lần duy nhất
+
             if slotsNeeded > 0 then
                 local item = FindFlagInInventory(activeId)
                 if item and item.amount > 0 then
@@ -1852,16 +1796,14 @@ local function AutoManageFlags()
                     PlaceFlagMaxSlots(activeId, item.uid, amountToPlace)
                 end
             end
-            -- Đã full slots (hoặc vừa cắm xong): Farm cho đến khi timeLeft <= 0 mới can thiệp tiếp
+
             return
         else
-            -- Cờ khác trên map (không đè được): chờ hết hạn
+
             return
         end
     end
 
-    -- TRƯỜNG HỢP 2: TRÊN MAP CHƯA CÓ CỜ HOẶC CỜ CŨ ĐÃ HẾT HẠN (timeLeft <= 0)
-    -- Quy tắc ưu tiên: Ưu tiên "Fortune Flag", nếu không có thì dùng "Coins Flag"
     local selectedFlag = nil
     local fortuneItem = FindFlagInInventory("Fortune Flag")
     local coinsItem = FindFlagInInventory("Coins Flag")
@@ -1873,12 +1815,12 @@ local function AutoManageFlags()
     end
 
     if not selectedFlag then
-        return -- Không còn cờ nào trong kho đồ
+        return
     end
 
     local maxSlots = FlexibleFlagCmds.GetMaxPlace and FlexibleFlagCmds.GetMaxPlace(selectedFlag.id, pType, pId, aId) or 0
     if maxSlots <= 0 then
-        maxSlots = 24 -- Fallback theo chuẩn game
+        maxSlots = 24
     end
 
     local amountToPlace = math.min(maxSlots, selectedFlag.amount)
@@ -1900,7 +1842,6 @@ local function StartEventBoosterLoop()
         end
     end)
 end
-
 
 local function CheckAndUnlockHouses(force)
     if not CONFIG.BloodMoon.AutoUnlockHouses then return false end
@@ -1925,15 +1866,14 @@ local function CheckAndUnlockHouses(force)
         local returnCF = hrp and hrp.CFrame
         local wasAnchored = hrp and hrp.Anchored
 
-        print(string.format("[blood moon] 🗝️ Đủ Lollipops (%d/%d)! Tiến hành di chuyển tới Nhà %d để mở khóa...", currentLollipops, cost, nextHouse))
+        print(string.format("[blood moon] Unlocking House %d (Lollipops: %d/%d)...", nextHouse, currentLollipops, cost))
         SafeTeleport(spot)
-        task.wait(0.65) -- Tăng thời gian chờ để server replicate network physics vị trí
+        task.wait(0.65)
 
         local ok, res, msg = pcall(function()
             return inst:InvokeCustom("HW_Doors_Unlock", nextHouse)
         end)
 
-        -- Retry nếu server chưa kịp cập nhật vị trí
         if ok and res == false and tostring(msg):find("Walk up") then
             task.wait(0.5)
             ok, res, msg = pcall(function()
@@ -1942,9 +1882,9 @@ local function CheckAndUnlockHouses(force)
         end
 
         if ok and res ~= false then
-            print(string.format("[blood moon] 🎉 Mở khóa thành công Nhà %d!", nextHouse))
+            print(string.format("[blood moon] Unlocked House %d", nextHouse))
         else
-            warn(string.format("[blood moon] ⚠️ Mở khóa Nhà %d: %s", nextHouse, tostring(msg or res)))
+            warn(string.format("[blood moon] Unlock House %d failed: %s", nextHouse, tostring(msg or res)))
         end
         task.wait(0.3)
 
@@ -1959,6 +1899,187 @@ local function CheckAndUnlockHouses(force)
         return ok and res ~= false
     end
     return false
+end
+
+local function CheckAndPlaceGiantCandyChests()
+    if not CONFIG.League or not CONFIG.League.Enabled then return false end
+    local inst = GetHatchWarInstance()
+    if not inst then return false end
+
+    local count = 0
+    pcall(function()
+        local Items = LoadModule(Library, "Items")
+        if Items and Items.Misc then
+            local item = Items.Misc("Giant Candy Chest")
+            count = item and item:CountExact() or 0
+        end
+    end)
+
+    if count <= 0 then return false end
+
+    local housesSave = inst:GetSavedValue("Houses")
+    local housesUnlocked = (HatchWarDoors and HatchWarDoors.Unlocked and HatchWarDoors.Unlocked(housesSave)) or 1
+    local targetHouse = 1
+
+    local spot = HOUSE_SPOTS[targetHouse]
+    if spot then
+        local hrp = GetHRP()
+        local returnCF = hrp and hrp.CFrame
+        local wasAnchored = hrp and hrp.Anchored
+
+        SafeTeleport(spot)
+        task.wait(0.3)
+
+        local placed = false
+        pcall(function()
+            local CandyChest = LoadModule(Client, "HatchWarCmds") and LoadModule(Client.HatchWarCmds, "CandyChest")
+            if CandyChest and CandyChest.Place then
+                local res = CandyChest.Place(targetHouse)
+                placed = (res ~= "busy" and res ~= false)
+            elseif inst.InvokeCustom then
+                local res = inst:InvokeCustom("HW_Doors_SpawnChest", targetHouse)
+                placed = (res ~= false)
+            end
+        end)
+
+        if placed then
+            print(string.format("[league] Placed Giant Candy Chest at House %d", targetHouse))
+            task.wait(0.5)
+        end
+
+        if returnCF then
+            SafeTeleport(returnCF)
+            task.wait(0.15)
+            local curHrp = GetHRP()
+            if curHrp and wasAnchored then
+                curHrp.Anchored = true
+            end
+        end
+        return placed
+    end
+    return false
+end
+
+local function FindAllEventChests()
+    local chests = {}
+    local things = workspace:FindFirstChild("__THINGS")
+    local bFolder = things and things:FindFirstChild("Breakables")
+    local hrp = GetHRP()
+    local myPos = hrp and hrp.Position
+
+    if bFolder then
+        for _, b in ipairs(bFolder:GetChildren()) do
+            if b:IsA("Model") and b.Name ~= "Highlight" then
+                if IsChestBreakable(b) then
+                    table.insert(chests, b)
+                end
+            end
+        end
+    end
+
+    pcall(function()
+        local CandyChest = LoadModule(Client, "HatchWarCmds") and LoadModule(Client.HatchWarCmds, "CandyChest")
+        if CandyChest and CandyChest.State then
+            local uvs = debug.getupvalues(CandyChest.State)
+            local u58 = uvs and uvs[1]
+            if type(u58) == "table" then
+                for _, item in pairs(u58) do
+                    local b = item.Breakable and item.Breakable.model
+                    if b and b.Parent and b:IsA("Model") and not table.find(chests, b) then
+                        table.insert(chests, b)
+                    end
+                end
+            end
+        end
+    end)
+
+    if #chests > 1 and myPos then
+        table.sort(chests, function(a, b)
+            local aCandy = (a:GetAttribute("CandyChest") == true)
+            local bCandy = (b:GetAttribute("CandyChest") == true)
+            if aCandy and not bCandy then return true end
+            if not aCandy and bCandy then return false end
+
+            local pA = a:GetPivot()
+            local pB = b:GetPivot()
+            local distA = pA and (pA.Position - myPos).Magnitude or 9999
+            local distB = pB and (pB.Position - myPos).Magnitude or 9999
+            return distA < distB
+        end)
+    end
+
+    return chests
+end
+
+local FindStreetCandyChests = FindAllEventChests
+
+local function BreakTargetChest(chestModel, maxDuration)
+    if not chestModel or not chestModel.Parent then return false end
+    maxDuration = maxDuration or 25
+    local chestPivot = chestModel:GetPivot()
+    local chestPos = chestPivot and chestPivot.Position
+    if not chestPos then return false end
+
+    local chestId = chestModel:GetAttribute("BreakableID") or chestModel.Name
+    print(string.format("[league] Target Chest: %s",
+        tostring(chestId), chestPos.X, chestPos.Y, chestPos.Z))
+
+    local hrp = GetHRP()
+    local oldPos = hrp and hrp.CFrame
+    local wasAnchored = hrp and hrp.Anchored
+
+    local standPos = CFrame.new(chestPos + Vector3.new(0, 3, 6))
+    SafeTeleport(standPos)
+    task.wait(0.2)
+    hrp = GetHRP()
+    if hrp then hrp.Anchored = true end
+
+    local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
+    local startTime = os.clock()
+    local lastTap = 0
+
+    while Running() and chestModel.Parent and (os.clock() - startTime < maxDuration) do
+
+        local pets = GetLocalPets()
+        if #pets > 0 then
+            for _, pet in ipairs(pets) do
+                pcall(function()
+                    if pet:GetTarget() ~= chestModel then
+                        pet:SetTarget(chestModel)
+                    end
+                end)
+            end
+        end
+
+        if netDamage and os.clock() - lastTap >= 0.07 then
+            lastTap = os.clock()
+            pcall(function()
+                if SignalMod and SignalMod.Fire then
+                    SignalMod.Fire("AutoClicker_Nearby", chestModel.Name)
+                else
+                    netDamage:FireServer(chestModel.Name)
+                end
+            end)
+        end
+
+        task.wait(0.07)
+    end
+
+    local broken = (not chestModel.Parent)
+    if broken then
+        print(string.format("[league] Broken Chest: %s (+Points)", tostring(chestId)))
+    end
+
+    if oldPos then
+        SafeTeleport(oldPos)
+        task.wait(0.15)
+        local curHrp = GetHRP()
+        if curHrp and wasAnchored then
+            curHrp.Anchored = true
+        end
+    end
+
+    return broken
 end
 
 local function CheckAndKnockDoors(force)
@@ -1979,7 +2100,6 @@ local function CheckAndKnockDoors(force)
     local now = workspace:GetServerTimeNow()
     local curCoins = GetCoins()
 
-    -- Thứ tự ưu tiên: Nếu đang Blood Moon thì ưu tiên Nhà 8, 7 trước (để săn Huge & Titanic)
     local order = {}
     if isBloodMoon and CONFIG.BloodMoon.PrioritizeHouses7And8 then
         for h = maxHouse, 1, -1 do
@@ -2012,8 +2132,20 @@ local function CheckAndKnockDoors(force)
                 end)
                 if ok and res ~= false then
                     knockedAny = true
-                    print(string.format("[blood moon] 🚪 Gõ Cửa Nhà %d thành công! (BloodMoon: %s)", houseNum, tostring(isBloodMoon)))
+                    print(string.format("[blood moon] open_house:%d (BloodMoon: %s)", houseNum, tostring(isBloodMoon)))
                     task.wait(0.3)
+
+                    if CONFIG.League and CONFIG.League.Enabled and CONFIG.League.PostKnockCheck then
+                        task.wait(0.4)
+                        local streetChests = FindStreetCandyChests()
+                        for _, chest in ipairs(streetChests) do
+                            local cp = chest:GetPivot() and chest:GetPivot().Position
+                            if cp and spot and (cp - spot.Position).Magnitude <= 40 then
+                                BreakTargetChest(chest, 30)
+                                break
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -2054,7 +2186,7 @@ local function CheckAndOpenPumpkin(force)
             return inst:InvokeCustom("HW_Pumpkin_Open")
         end)
         if ok and res ~= false then
-            print(string.format("[pumpkin] 🎃 Mở Giant Pumpkin thành công (x%d Opens, Points: %s/%s)!", 
+            print(string.format("[pumpkin] Opened Giant Pumpkin (x%d, points: %s/%s)",
                 opens, FormatNumber(points), FormatNumber(cap)))
             task.wait(0.3)
         end
@@ -2072,18 +2204,13 @@ local function CheckAndOpenPumpkin(force)
     return false
 end
 
--- ============================================================================
--- 9. EndGame Cycle Engine (Xả Coin liên tục cho đến khi hết coin & Clear Cache)
--- ============================================================================
 currentCycle = currentCycle or 1
 
 local function ClearCycleCache(cycleNum)
     local cNum = cycleNum or currentCycle
 
-    -- 1. Giải phóng UI & Lock của Boss Fight
     ForceCleanupBossFight()
 
-    -- 2. Đóng toàn bộ GUI rác trong PlayerGui nếu còn sót lại
     pcall(function()
         local pGui = LocalPlayer:FindFirstChild("PlayerGui")
         if pGui then
@@ -2098,13 +2225,11 @@ local function ClearCycleCache(cycleNum)
         end
     end)
 
-    -- 3. Mở neo tạm thời trước khi chuẩn bị di chuyển về bãi farm
     local hrp = GetHRP()
     if hrp then
         hrp.Anchored = false
     end
 
-    -- 4. Kích hoạt dọn rác bộ nhớ Lua (Lua GC)
     pcall(function()
         collectgarbage("count")
     end)
@@ -2113,18 +2238,26 @@ local function ClearCycleCache(cycleNum)
 end
 
 local function PerformEventIntermissions()
-    -- 1. Ưu tiên mở khóa Nhà mới liên tục nếu đủ Lollipops (mở hết các nhà có thể mua)
+
+    if CONFIG.League and CONFIG.League.Enabled then
+        CheckAndPlaceGiantCandyChests()
+        local streetChests = FindStreetCandyChests()
+        if #streetChests > 0 then
+            for _, chest in ipairs(streetChests) do
+                BreakTargetChest(chest, 20)
+                task.wait(0.2)
+            end
+        end
+    end
+
     while CheckAndUnlockHouses(true) do
         task.wait(0.3)
     end
 
-    -- 2. Ưu tiên gõ cửa nếu có cửa hết cooldown (nhất là trong Blood Moon)
     CheckAndKnockDoors(true)
 
-    -- 3. Mở Giant Pumpkin nếu đã tích đầy
     CheckAndOpenPumpkin(true)
 
-    -- 4. Định kỳ kiểm tra mua Upgrades nếu đến chu kỳ
     if CONFIG.AutoUpgrade and (os.clock() - lastUpgradeCheck > CONFIG.UpgradeCheckInterval) then
         lastUpgradeCheck = os.clock()
         CheckAndBuyUpgrades(true)
@@ -2132,13 +2265,13 @@ local function PerformEventIntermissions()
 end
 
 local function BossEndGameCycleLoop(targetZone)
-    -- BẢO VỆ GAMEPASS: Acc có gp chỉ được bật isFightingBoss khi Auto Farm đã thực sự đặt xong (res == true)
-    if HasAutoFarmGamepass() then
+
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
         local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
         if not afReady or lastAutoFarmZone ~= targetZone then
             local afOk = EnsureAutoFarmActiveAtZone(targetZone)
             if not afOk then
-                warn(string.format("[auto boss] ⚠️ Auto Farm chưa kích hoạt xong tại Zone %d (res: false) -> Hoãn chu kỳ Boss!", targetZone))
+                warn(string.format("[auto boss] Zone %d AutoFarm not ready -> Delay boss cycle.", targetZone))
                 return 0
             end
         end
@@ -2150,7 +2283,6 @@ local function BossEndGameCycleLoop(targetZone)
     local fightCountInCycle = 0
     local cycleStartCoins = GetCoins()
 
-    -- Đảm bảo trước khi vào chu kỳ đánh boss liên tục, nhân vật đã ở bossSpot và neo chặt
     local inst = GetHatchWarInstance()
     local bossSpot = info and info.Spot
     local bFolder = inst and inst.model and inst.model:FindFirstChild("INTERACT")
@@ -2169,17 +2301,13 @@ local function BossEndGameCycleLoop(targetZone)
         if hrp then hrp.Anchored = true end
     end
 
-    -- [DUAL BACKGROUND FARM ENGINE - VỪA ĐÁNH BOSS VỪA CÀY COIN ZONE 6]:
-    -- Giải quyết triệt để: Pets liên tục cày nát bãi Zone 6 + Auto Tap 20Hz mang coin về bù chi phí đánh boss
     local bossFarmActive = true
     local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
 
-    -- Worker 1: Target-Focused Auto Tap Engine (14Hz) cày breakables Zone 6 liên tục
     StartAutoTapWorker(targetZone, function()
         return bossFarmActive
     end)
 
-    -- Worker 2: Smart Pet 999 Remote Dispatcher (5Hz) liên tục xua 15 Pets ra cắn nát breakables Zone 6
     task.spawn(function()
         while Running() and bossFarmActive do
             local valid = GetZoneBreakables(targetZone)
@@ -2201,26 +2329,29 @@ local function BossEndGameCycleLoop(targetZone)
         end
     end)
 
+    local lastIntermissionCheck = os.clock()
     while Running() and GetCoins() >= minCoinsToFight do
         fightCountInCycle = fightCountInCycle + 1
 
-        -- Tự động duy trì Event Boosters (Halloween Lucky Egg & Trick or Treat Luck)
         AutoUseEventBoosters()
 
-        local success = FightBossAtZone(targetZone, true) -- true: skipCoinCheck (không chạy về bãi cày giữa chừng)
+        local success = FightBossAtZone(targetZone, true)
+
+        if os.clock() - lastIntermissionCheck >= 30 then
+            lastIntermissionCheck = os.clock()
+            PerformEventIntermissions()
+        end
 
         if not success then
-            -- Nếu kích hoạt trận không thành công (boss chưa idle hoặc server bận), chờ 1s thử lại
+
             task.wait(1.0)
         else
-            -- Sau khi kết thúc trận, chờ cực ngắn (0.25s) cho server reset state mà không mất time
+
             task.wait(0.25)
         end
 
-        -- [INTERMISSION]: Kiểm tra từ xa & xử lý sự kiện ưu tiên (Unlock nhà / Gõ cửa / Pumpkin / Upgrade)
         PerformEventIntermissions()
 
-        -- Nếu coin sau trận đã giảm xuống dưới minCoinsToFight thì dừng chu kỳ
         if GetCoins() < minCoinsToFight then
             break
         end
@@ -2232,14 +2363,14 @@ local function BossEndGameCycleLoop(targetZone)
 end
 
 local function HatchEndGameCycleLoop()
-    -- BẢO VỆ GAMEPASS: Acc có gp chỉ được chạy Hatch khi Auto Farm đã thực sự đặt xong (res == true)
-    if HasAutoFarmGamepass() then
+
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
         local targetZone = CONFIG.EndGame.TargetZone or 6
         local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
         if not afReady or lastAutoFarmZone ~= targetZone then
             local afOk = EnsureAutoFarmActiveAtZone(targetZone)
             if not afOk then
-                warn(string.format("[auto hatch] ⚠️ Auto Farm chưa kích hoạt xong tại Zone %d (res: false) -> Hoãn chu kỳ Hatch!", targetZone))
+                warn(string.format("[auto hatch] Zone %d AutoFarm not ready -> Delay hatch cycle.", targetZone))
                 return 0
             end
         end
@@ -2252,22 +2383,19 @@ local function HatchEndGameCycleLoop()
         return 0
     end
 
-    -- 1. Tự động kiểm tra mua Max Egg Slots khi có Diamonds trước khi vào chu kỳ Hatch
     CheckAndBuyEggSlots()
 
-    -- 2. Tự động kích hoạt Event Boosters (Halloween Lucky Egg)
     AutoUseEventBoosters()
 
-    -- Vị trí đứng: Neo ngay trước bệ trứng mục tiêu (Manor Egg / Werewolf Egg / Witching Egg)
     local eggName = CONFIG.EndGame.EggName or "Manor Egg"
-    local HATCH_STAND_CFRAME = EGG_STAND_CFRAMES[eggName] or (CONFIG.EndGame.EggSpot and CFrame.new(CONFIG.EndGame.EggSpot + Vector3.new(0, -4.8, 4))) or CFrame.new(7537.25, 16.5, 21943.0)
+    local HATCH_STAND_CFRAME = EGG_STAND_CFRAMES[eggName] or (CONFIG.EndGame.EggSpot and CFrame.new(CONFIG.EndGame.EggSpot)) or CFrame.new(7537.90, 16.21, 21962.36)
     SafeTeleport(HATCH_STAND_CFRAME)
     task.wait(0.3)
     local hrp = GetHRP()
     if hrp then hrp.Anchored = true end
 
     local eggUid = CustomEggsCmds.GetClosestById and CustomEggsCmds.GetClosestById(CONFIG.EndGame.EggName)
-    local eggUnitPrice = 98000 -- Fallback giá 1 quả trứng
+    local eggUnitPrice = 98000
     pcall(function()
         local CalcEggPricePlayer = LoadModule(Library, "Balancing.CalcEggPricePlayer")
         local eggData = eggUid and CustomEggsCmds.Get(eggUid)
@@ -2276,7 +2404,6 @@ local function HatchEndGameCycleLoop()
         end
     end)
 
-    -- Lấy maxHatch động từ EggCmds thay vì fix cứng 88
     local maxHatch = (EggCmds and EggCmds.GetMaxHatch and EggCmds.GetMaxHatch()) or 8
     local hatchBatches = 0
     local lastHatchPrint = 0
@@ -2284,12 +2411,10 @@ local function HatchEndGameCycleLoop()
     local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
     local targetFarmZone = CONFIG.EndGame.TargetZone or 6
 
-    -- [WORKER 1 - VỪA HATCH VỪA FARM]: Target-Focused Auto Tap Engine (14Hz) song song trong lúc mở trứng
     StartAutoTapWorker(targetFarmZone, function()
         return hatchFarmActive
     end)
 
-    -- [WORKER 2 - VỪA HATCH VỪA FARM]: Phân phối 15 Pet Speed 999 cắn breakables Zone song song trong lúc mở trứng
     task.spawn(function()
         while Running() and hatchFarmActive do
             local valid = GetZoneBreakables(targetFarmZone)
@@ -2311,8 +2436,8 @@ local function HatchEndGameCycleLoop()
         end
     end)
 
-    -- [VÒNG LẶP MỞ TRỨNG CHÍNH - MỞ LIÊN TỤC CHO ĐẾN KHI HẾT COIN]
     local failedStreak = 0
+    local lastIntermissionCheck = os.clock()
     while Running() and GetCoins() >= eggUnitPrice do
         if not eggUid then
             eggUid = CustomEggsCmds.GetClosestById and CustomEggsCmds.GetClosestById(CONFIG.EndGame.EggName)
@@ -2321,12 +2446,11 @@ local function HatchEndGameCycleLoop()
         local curCoins = GetCoins()
         maxHatch = (EggCmds and EggCmds.GetMaxHatch and EggCmds.GetMaxHatch()) or maxHatch
 
-        -- TÍNH TOÁN ĐỘNG: Nếu coin < giá maxHatch quả, tự động giảm xuống số quả có thể mua được!
         local maxAffordable = math.floor(curCoins / eggUnitPrice)
         local batchAmount = math.min(maxHatch, maxAffordable)
 
         if batchAmount <= 0 then
-            break -- Thực sự không đủ tiền mở dù chỉ 1 quả
+            break
         end
 
         local success = false
@@ -2344,21 +2468,25 @@ local function HatchEndGameCycleLoop()
         end
 
         if not success and failedStreak >= 2 then
-            -- Nếu có lỗi hoặc bị server đẩy lùi, snap lại vị trí chuẩn ngay trước bệ trứng
+
             SafeTeleport(HATCH_STAND_CFRAME)
             task.wait(0.2)
+        end
+
+        if os.clock() - lastIntermissionCheck >= 30 then
+            lastIntermissionCheck = os.clock()
+            PerformEventIntermissions()
         end
 
         task.wait(0.12)
 
         if os.clock() - lastHatchPrint > 3 or hatchBatches == 1 then
             lastHatchPrint = os.clock()
-            print(string.format("[auto map] Zone %d || Hatch: #%d (x%d) || %s || Coins: %s || cycle: %d", 
+            print(string.format("[auto map] Zone %d || Hatch: #%d (x%d) || %s || Coins: %s || cycle: %d",
                 CONFIG.EndGame.TargetZone or 6, hatchBatches, batchAmount, CONFIG.EndGame.EggName, FormatNumber(GetCoins()), currentCycle))
         end
     end
 
-    -- Kết thúc chu kỳ mở trứng
     hatchFarmActive = false
     task.wait(0.1)
     hrp = GetHRP()
@@ -2367,10 +2495,6 @@ local function HatchEndGameCycleLoop()
     runState.isHatching = false
     return hatchBatches
 end
-
--- ============================================================================
--- 10. Master Gatekeeper & Main Execution Engine
--- ============================================================================
 
 local function StartBloodMoonWatcher()
     task.spawn(function()
@@ -2382,16 +2506,46 @@ local function StartBloodMoonWatcher()
                     if state ~= lastMoonState then
                         lastMoonState = state
                         if state == "up" then
-                            print("[blood moon] 🌕 BLOOD MOON ĐÃ MỌC! (3x Luck, 2x Huge/Titanic, 2x Door Loot) - Tự động ưu tiên gõ Cửa 7 & 8!")
+                            print("[blood moon] Blood Moon RISE (3x Luck, 2x Huge/Titanic).")
                         elseif state == "warn" then
                             local nextRise = GetBloodMoonNextRise()
                             local timeLeft = nextRise and math.max(0, math.ceil(nextRise - workspace:GetServerTimeNow())) or 300
-                            print(string.format("[blood moon] ⚠️ Blood Moon sẽ mọc sau %d giây!", timeLeft))
+                            print(string.format("[blood moon] Blood Moon in %ds", timeLeft))
                         end
                     end
                 end
             end)
             task.wait(4)
+        end
+    end)
+end
+
+local function StartLeaguePatrolWorker()
+    if not CONFIG.League or not CONFIG.League.Enabled then return end
+    task.spawn(function()
+        local lastScanTime = 0
+        while Running() do
+            local interval = CONFIG.League.ScanInterval or 2.5
+            if os.clock() - lastScanTime >= interval then
+                lastScanTime = os.clock()
+
+                CheckAndPlaceGiantCandyChests()
+
+                local allChests = FindAllEventChests()
+                if #allChests > 0 then
+                    local moonState = GetBloodMoonState()
+                    local isBloodMoon = (moonState == "up")
+                    print(string.format("[league] Radar: %d chests found (BloodMoon: %s)",
+                        #allChests, tostring(isBloodMoon)))
+                    for _, chest in ipairs(allChests) do
+                        if not Running() then break end
+                        BreakTargetChest(chest, 25)
+                        task.wait(0.2)
+                    end
+                end
+            end
+
+            task.wait(0.5)
         end
     end)
 end
@@ -2404,7 +2558,6 @@ local function StartMainAutomationLoop()
                 continue
             end
 
-            -- 1. Kiểm tra tiến độ mở map (Zone 1 -> TargetZone)
             local maxZone = GetCurrentMaxUnlockedZone()
             local targetZone = CONFIG.EndGame.TargetZone or 6
 
@@ -2412,29 +2565,28 @@ local function StartMainAutomationLoop()
                 local bossToBeat = maxZone
                 local info = BOSS_INFO[bossToBeat]
 
-                print(string.format("[auto map] 🗺️ Đang ở Zone %d/%d || Đánh Boss %d (%s) để mở Gate %d", 
-                    maxZone, targetZone, bossToBeat, info and info.Name or "?", bossToBeat + 1))
+                print(string.format("[auto map] Zone %d/%d || Boss %d: %s",
+                    maxZone, targetZone, bossToBeat, info and info.Name or "?"))
 
                 FightBossAtZone(bossToBeat)
 
                 task.wait(0.5)
                 local newMax = GetCurrentMaxUnlockedZone()
                 if newMax > maxZone then
-                    print(string.format("[auto map] >> THÀNH CÔNG: Đã mở khóa Zone %d!", newMax))
+                    print(string.format("[auto map] Unlocked Zone %d", newMax))
                 end
             else
-                -- 2. Đã mở tới TargetZone (Mặc định Zone 6: Count's Manor)
+
                 EnforceEndGameExclusivity()
 
                 local curCoins = GetCoins()
                 local targetCoins = CONFIG.EndGame.TargetCoins or 1_000_000_000
                 local hasAutoFarm = HasAutoFarmGamepass()
 
-                -- BƯỚC 1: ĐẶT AUTO FARM BẮT BUỘC NẾU CÓ GAMEPASS (Chỉ chạy EndGame khi res == true)
-                if hasAutoFarm then
+                if hasAutoFarm and IsMaxZoneUnlocked() then
                     local autoFarmActive = EnsureAutoFarmActiveAtZone(targetZone)
                     if not autoFarmActive then
-                        print(string.format("[auto farm] ⏳ Acc có Gamepass nhưng chưa kích hoạt xong Auto Farm tại Zone %d (res: false). Đang thử lại trước khi chạy EndGame...", targetZone))
+                        print(string.format("[auto farm] Zone %d not ready -> Retrying before EndGame...", targetZone))
                         task.wait(1.0)
                         continue
                     end
@@ -2443,24 +2595,21 @@ local function StartMainAutomationLoop()
                 if CONFIG.EndGame.Boss == true then
                     local info = BOSS_INFO[targetZone]
                     local minCoinsToFight = info and info.MinCoins or 98000
-                    -- Ngưỡng đệm an toàn (30% targetCoins hoặc 300M): Đảm bảo coin không bao giờ bị cạn sạch
+
                     local minBufferCoins = math.min(targetCoins * 0.3, 300_000_000)
 
-                    -- Kiểm tra Coin: Nếu coin dưới ngưỡng đệm an toàn hoặc dưới minCoins:
                     if curCoins < minBufferCoins or curCoins < minCoinsToFight then
-                        print(string.format("[auto map] 💰 Coin thấp (%s < %s)! Tele ra bãi Zone %d cày coin thần tốc...", 
+                        print(string.format("[auto map] Coins low (%s < %s) -> Farming Zone %d",
                             FormatNumber(curCoins), FormatNumber(targetCoins), targetZone))
                         FarmBreakablesUntil(targetCoins, targetCoins, targetZone)
                     else
-                        -- BƯỚC 2: LÀM HẾT CÁC THỨ ĐÃ CHECK RES TRUE (Unlock Nhà, Gõ Cửa, Mở Pumpkin, Mua Upgrade)
+
                         PerformEventIntermissions()
 
-                        -- BƯỚC 3: RỒI MỚI BATTLE BOSS
                         BossEndGameCycleLoop(targetZone)
                         ClearCycleCache(currentCycle)
                         currentCycle = currentCycle + 1
 
-                        -- Sau chu kỳ boss: Thực hiện intermission
                         PerformEventIntermissions()
                     end
                 elseif CONFIG.EndGame.Hatch == true then
@@ -2484,44 +2633,36 @@ local function StartMainAutomationLoop()
     end)
 end
 
--- ============================================================================
--- [MASTER GATEKEEPER ENTRYPOINT]
--- Tối ưu: Chờ Join Event HatchWar hoàn tất và trả về TRUE rồi mới thực thi các function tiếp theo!
--- ============================================================================
 task.spawn(function()
-    print("[event] ⏳ Đang kiểm tra trạng thái Event HatchWar (Blood Moon)...")
+    print("[event] Checking HatchWar status...")
     while Running() do
         local joined = EnsureInHatchWar()
         if joined == true then
-            print("[event] 🎯 XÁC NHẬN JOIN EVENT HATCHWAR THÀNH CÔNG (true)! Bắt đầu kích hoạt toàn bộ hệ thống...")
+            print("[event] HatchWar confirmed (true). Starting engine...")
             break
         end
-        print("[event] 🔄 Đang đợi hoàn tất Join Event và nạp đầy đủ bản đồ... Thử lại sau 2 giây.")
+        print("[event] Waiting for map load... Retrying in 2s.")
         task.wait(2)
     end
 
     if not Running() then return end
 
-    -- BƯỚC 1: ĐẶT AUTO FARM ĐẦU TIÊN NẾU CÓ GAMEPASS (Lặp cho đến khi res == true)
     local targetZone = CONFIG.EndGame.TargetZone or 6
-    if HasAutoFarmGamepass() then
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
         while Running() do
             local afOk = EnsureAutoFarmActiveAtZone(targetZone)
             if afOk == true then
                 break
             end
-            print(string.format("[auto farm] 🔄 Đang đợi kích hoạt Auto Farm thành công tại Zone %d (res: false)... Thử lại sau 1.5 giây.", targetZone))
+            print(string.format("[auto farm] Waiting Zone %d (res: false)... Retrying in 1.5s.", targetZone))
             task.wait(1.5)
         end
     end
 
-    -- BƯỚC 2: THỰC HIỆN TOÀN BỘ CÁC TƯƠNG TÁC ĐÃ CHECK RES TRUE (Unlock Nhà, Gõ Cửa, Mở Pumpkin, Mua Upgrade)
     PerformEventIntermissions()
 
-    -- BƯỚC 3: KHỞI ĐỘNG CÁC THREAD GIÁM SÁT VÀ BẮT ĐẦU VÒNG LẶP CHÍNH (BATTLE BOSS)
     StartEventBoosterLoop()
     StartBloodMoonWatcher()
+    StartLeaguePatrolWorker()
     StartMainAutomationLoop()
 end)
-
-
