@@ -26,6 +26,10 @@ local getgenv = env.getgenv or function() return _G end
 local setreadonly = env.setreadonly
 local make_writeable = env.make_writeable
 local dynamicRequire = env.require or require
+local hookfunction = env.hookfunction or hookfunction or replaceclosure
+local hookmetamethod = env.hookmetamethod or hookmetamethod
+local newcclosure = env.newcclosure or function(f) return f end
+local getnamecallmethod = env.getnamecallmethod or getnamecallmethod
 
 if getgenv().AutoMapStop then
     pcall(getgenv().AutoMapStop)
@@ -172,6 +176,7 @@ end
 
 local DEFAULT_CONFIG = {
     AutoMap = true,
+    AntiIdleTracking = true,
     AutoUltimate = true,
     SilentHatch = true,
     AutoFlags = true,
@@ -385,6 +390,8 @@ pcall(function()
         for _, conn in ipairs(getcons(LocalPlayer.Idled)) do
             if conn and conn.Disable then
                 conn:Disable()
+            elseif conn and conn.Disconnect then
+                conn:Disconnect()
             end
         end
     end
@@ -454,6 +461,65 @@ pcall(function()
                 end
                 return origInvoke(remoteName, ...)
             end)
+        end
+    end
+
+    if CONFIG.AntiIdleTracking then
+        if Network and type(Network.Fire) == "function" then
+            local origFire = Network.Fire
+            if hookfunc then
+                local rawFire
+                rawFire = hookfunc(Network.Fire, function(remoteName, ...)
+                    if remoteName == "Move Server" or remoteName == "Idle Tracking: Update Timer" then
+                        return nil
+                    end
+                    return rawFire(remoteName, ...)
+                end)
+            else
+                SafePatch(Network, "Fire", function(remoteName, ...)
+                    if remoteName == "Move Server" or remoteName == "Idle Tracking: Update Timer" then
+                        return nil
+                    end
+                    return origFire(remoteName, ...)
+                end)
+            end
+        end
+
+        local FFlags = LoadModule(Client, "FFlags")
+        if FFlags and FFlags.Keys and FFlags.Get then
+            local origGet = FFlags.Get
+            local blockedKeys = {
+                [FFlags.Keys.AntiAFKMoveTime] = true,
+                [FFlags.Keys.AntiAFKMoveTimeUnf] = true,
+                [FFlags.Keys.AntiAFKMoveTimeMitchell] = true,
+                [FFlags.Keys.AntiAFKMoveTimeUnfMitchell] = true,
+            }
+            if hookfunc then
+                local rawGet
+                rawGet = hookfunc(FFlags.Get, function(key, ...)
+                    if blockedKeys[key] then return math.huge end
+                    return rawGet(key, ...)
+                end)
+            else
+                SafePatch(FFlags, "Get", function(key, ...)
+                    if blockedKeys[key] then return math.huge end
+                    return origGet(key, ...)
+                end)
+            end
+        end
+
+        if hookmetamethod then
+            local oldNamecall
+            oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+                local method = getnamecallmethod()
+                if method == "FireServer" and self and typeof(self) == "Instance" then
+                    local name = self.Name
+                    if name == "Move Server" or name == "Idle Tracking: Update Timer" then
+                        return nil
+                    end
+                end
+                return oldNamecall(self, ...)
+            end))
         end
     end
 end)
