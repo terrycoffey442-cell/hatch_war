@@ -1,0 +1,2668 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.2)
+    LocalPlayer = Players.LocalPlayer
+end
+
+local function WaitForCharacter()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart", 15)
+    while not hrp do
+        task.wait(0.2)
+        char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        hrp = char:FindFirstChild("HumanoidRootPart")
+    end
+    return char, hrp
+end
+WaitForCharacter()
+
+local env = getfenv()
+local getgenv = env.getgenv or function() return _G end
+local setreadonly = env.setreadonly
+local make_writeable = env.make_writeable
+local dynamicRequire = env.require or require
+
+if getgenv().AutoMapStop then
+    pcall(getgenv().AutoMapStop)
+end
+getgenv().AutoMapRunning = true
+
+local runState = {
+    alive = true,
+    isFightingBoss = false,
+    isHatching = false,
+}
+local connections = {}
+local patches = {}
+local BossModule = nil
+local ConsumableCmds = nil
+
+local function Running()
+    return runState.alive and getgenv().AutoMapRunning == true
+end
+
+local function IsBusy()
+    if runState.isFightingBoss == true or runState.isHatching == true then
+        return true
+    end
+    if BossModule and BossModule.IsFighting and BossModule.IsFighting() == true then
+        return true
+    end
+    return false
+end
+
+local function AddConnection(conn)
+    if conn then table.insert(connections, conn) end
+    return conn
+end
+
+local function RegisterPatch(tbl, key, original)
+    if tbl and key ~= nil then
+        table.insert(patches, { module = tbl, key = key, original = original })
+    end
+end
+
+local function SafePatch(tbl, key, newFunc)
+    if not tbl or not key or not newFunc then return end
+    pcall(function()
+        if setreadonly then setreadonly(tbl, false) end
+        if make_writeable then make_writeable(tbl) end
+    end)
+    local original = tbl[key]
+    local success = pcall(function()
+        tbl[key] = newFunc
+    end)
+    if success and original then
+        RegisterPatch(tbl, key, original)
+    end
+end
+
+local function Teardown()
+    runState.alive = false
+    getgenv().AutoMapRunning = false
+    for i = #connections, 1, -1 do
+        pcall(function() connections[i]:Disconnect() end)
+        connections[i] = nil
+    end
+    for i = #patches, 1, -1 do
+        local p = patches[i]
+        if p and p.module then
+            pcall(function() p.module[p.key] = p.original end)
+        end
+        patches[i] = nil
+    end
+end
+getgenv().AutoMapStop = Teardown
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Library = ReplicatedStorage:WaitForChild("Library")
+local Client = Library:WaitForChild("Client")
+local Directory = Library:WaitForChild("Directory")
+local Types = Library:WaitForChild("Types")
+
+local function LoadModule(parent, moduleName)
+    if not parent then return nil end
+    local target = nil
+    local okFind = pcall(function()
+        target = parent:WaitForChild(moduleName, 15)
+    end)
+    if not okFind or not target then return nil end
+    local okReq, mod = pcall(dynamicRequire, target)
+    if not okReq then return nil end
+    return mod
+end
+
+local Network = LoadModule(Client, "Network")
+local Universal = LoadModule(Library, "Universal")
+local Saving = Universal and LoadModule(Universal, "Saving")
+local CurrencyCmds = LoadModule(Client, "CurrencyCmds")
+local InstancingCmds = LoadModule(Client, "InstancingCmds")
+local InstanceZoneCmds = LoadModule(Client, "InstanceZoneCmds")
+local EventUpgradeCmds = LoadModule(Client, "EventUpgradeCmds")
+local HatchWarCmds = LoadModule(Client, "HatchWarCmds")
+local PlayerPet = LoadModule(Client, "PlayerPet")
+local AutoFarmCmds = LoadModule(Client, "AutoFarmCmds")
+local CustomEggsCmds = LoadModule(Client, "CustomEggsCmds")
+local EggCmds = LoadModule(Client, "EggCmds")
+local UltimateCmds = LoadModule(Client, "UltimateCmds")
+local SaveMod = LoadModule(Client, "Save")
+ConsumableCmds = LoadModule(Client, "ConsumableCmds")
+local SignalMod = LoadModule(Library, "Signal")
+
+local HatchWarTypes = LoadModule(Types, "HatchWar")
+local EventUpgradesDir = LoadModule(Directory, "EventUpgrades")
+local Util = Library:WaitForChild("Util", 10)
+local HatchWarBoss = Util and LoadModule(Util, "HatchWarBoss")
+local HatchWarLuck = Util and LoadModule(Util, "HatchWarLuck")
+local HatchWarMoon = Util and LoadModule(Util, "HatchWarMoon")
+local HatchWarDoors = Util and LoadModule(Util, "HatchWarDoors")
+local HatchWarPumpkin = Util and LoadModule(Util, "HatchWarPumpkin")
+
+local HatchWarFolder = Client:WaitForChild("HatchWarCmds", 15)
+local BossFolder = HatchWarFolder and HatchWarFolder:WaitForChild("Boss", 15)
+BossModule = HatchWarFolder and LoadModule(HatchWarFolder, "Boss")
+if not BossModule and BossFolder then
+    pcall(function()
+        BossModule = dynamicRequire(BossFolder)
+    end)
+end
+local InputModule = BossFolder and LoadModule(BossFolder, "Input")
+local CirclesModule = BossFolder and LoadModule(BossFolder, "Circles")
+local SprayModule = BossFolder and LoadModule(BossFolder, "Spray")
+local DoorsMod = HatchWarFolder and LoadModule(HatchWarFolder, "Doors")
+local PumpkinMod = HatchWarFolder and LoadModule(HatchWarFolder, "Pumpkin")
+
+local function FormatNumber(n)
+    n = tonumber(n) or 0
+    if n >= 1_000_000_000 then
+        return string.format("%.2fB", n / 1_000_000_000)
+    elseif n >= 1_000_000 then
+        return string.format("%.2fM", n / 1_000_000)
+    elseif n >= 1_000 then
+        return string.format("%.1fK", n / 1_000)
+    else
+        return tostring(math.floor(n))
+    end
+end
+
+local DEFAULT_CONFIG = {
+    AutoMap = true,
+    AutoUltimate = true,
+    SilentHatch = true,
+    AutoFlags = true,
+
+    AutoUpgrade = true,
+    AutoBuyEggSlots = true,
+    UpgradeMinWands = 60,
+    UpgradeCheckInterval = 300,
+
+    BloodMoon = {
+        AutoKnock = true,
+        OnlyInBloodMoon = false,
+        PrioritizeHouses7And8 = true,
+        AutoUnlockHouses = true,
+        AutoPumpkin = true,
+    },
+
+    League = {
+        Enabled = true,
+        PrioritizeChests = true,
+        PostKnockCheck = true,
+        GlobalRadar = true,
+        ScanInterval = 2.5,
+    },
+
+    EndGame = {
+        TargetZone = 6,
+        TargetCoins = 1_000_000_000,
+        Hatch = false,
+        Boss = true,
+        EggName = "Manor Egg",
+        EggSpot = Vector3.new(7537.90, 16.21, 21962.36),
+    },
+
+    MinCoinsToFight = 200,
+    RecommendedRatio = 0.90,
+}
+
+local function MergeConfig(target, source)
+    for k, v in pairs(source) do
+        if type(v) == "table" and type(target[k]) == "table" then
+            MergeConfig(target[k], v)
+        else
+            target[k] = v
+        end
+    end
+    return target
+end
+
+getgenv().CONFIG = getgenv().CONFIG or {}
+local CONFIG = MergeConfig(DEFAULT_CONFIG, getgenv().CONFIG)
+getgenv().CONFIG = CONFIG
+
+local function EnforceEndGameExclusivity()
+    if CONFIG.EndGame.Hatch == true and CONFIG.EndGame.Boss == true then
+        warn("[CONFIG] Both Hatch and Boss enabled. Prioritizing Hatch=true, Boss=false.")
+        CONFIG.EndGame.Boss = false
+    end
+end
+
+local BOSS_INFO = {
+    [1] = {
+        Zone = 1,
+        Name = "Ember IBZ",
+        NextGate = 2,
+        MinCoins = 200,
+        Spot = CFrame.new(6183.50, 13.96, 21998.25),
+    },
+    [2] = {
+        Zone = 2,
+        Name = "Spore Lulu",
+        NextGate = 3,
+        MinCoins = 1400,
+        Spot = CFrame.new(6438.30, 13.94, 21998.25),
+    },
+    [3] = {
+        Zone = 3,
+        Name = "Ghoul Aussie",
+        NextGate = 4,
+        MinCoins = 9800,
+        Spot = CFrame.new(6693.90, 13.86, 21998.50),
+    },
+    [4] = {
+        Zone = 4,
+        Name = "Warlock Ahmad",
+        NextGate = 5,
+        MinCoins = 98000,
+        Spot = CFrame.new(6950.55, 13.80, 21998.50),
+    },
+    [5] = {
+        Zone = 5,
+        Name = "Werewolf Elkonn",
+        NextGate = 6,
+        MinCoins = 686000,
+        Spot = CFrame.new(7370.80, 13.80, 21998.50),
+    },
+    [6] = {
+        Zone = 6,
+        Name = "Count Nay",
+        NextGate = nil,
+        MinCoins = 4802000,
+        Spot = CFrame.new(7626.59, 13.80, 21998.50),
+    },
+}
+
+local HOUSE_SPOTS = {
+    [1] = CFrame.new(7488.92, 19.86, 21913.65),
+    [2] = CFrame.new(7487.50, 19.52, 22087.15),
+    [3] = CFrame.new(7545.17, 19.86, 21913.65),
+    [4] = CFrame.new(7534.00, 19.77, 22087.15),
+    [5] = CFrame.new(7588.71, 19.36, 21913.50),
+    [6] = CFrame.new(7577.75, 19.77, 22086.90),
+    [7] = CFrame.new(7635.46, 19.86, 21913.65),
+    [8] = CFrame.new(7633.75, 19.52, 22087.15),
+}
+
+local PUMPKIN_SPOT = CFrame.new(6025.00, 13.70, 21998.50)
+
+local EGG_STAND_CFRAMES = {
+    ["Manor Egg"] = CFrame.new(7537.90, 16.21, 21962.36),
+    ["Werewolf Egg"] = CFrame.new(7281.76, 16.5, 21943.0),
+    ["Witching Egg"] = CFrame.new(6861.06, 16.5, 21943.0),
+    ["Graveyard Egg"] = CFrame.new(6603.50, 16.5, 21943.0),
+    ["Spore Egg"] = CFrame.new(6348.50, 16.5, 21943.0),
+    ["Ember Egg"] = CFrame.new(6093.50, 16.5, 21943.0),
+}
+
+local UPGRADE_MACHINE_CFRAME = CFrame.new(6392.99, 13.67, 22057.54)
+
+local UPGRADES_LIST = {
+    "HatchWarMoonLuck",
+    "HatchWarAfterglow",
+    "HatchWarHatchSpeed",
+    "HatchWarShinyHunter",
+    "HatchWarCoinHunter",
+    "HatchWarOrbPower",
+    "HatchWarOrbSpawn",
+    "HatchWarRareHunter",
+    "HatchWarPumpkinGrowth",
+    "HatchWarOrbBank",
+    "HatchWarChainTime",
+    "HatchWarPumpkinLoot",
+    "HatchWarOrbReach",
+}
+
+local TIER_COSTS = {
+    [1] = 20,
+    [2] = 60,
+    [3] = 150,
+    [4] = 300,
+    [5] = 600,
+}
+
+pcall(function()
+    local OrbCmdsModule = Client and Client:FindFirstChild("OrbCmds")
+    local OrbModule = OrbCmdsModule and OrbCmdsModule:FindFirstChild("Orb") and dynamicRequire(OrbCmdsModule.Orb)
+    if OrbModule then
+        SafePatch(OrbModule, "CollectDistance", 999999)
+        SafePatch(OrbModule, "DefaultPickupDistance", 999999)
+    end
+
+    if Network and Network.Fired then
+        AddConnection(Network.Fired("Orbs: Create"):Connect(function(data)
+            if not Running() or type(data) ~= "table" then return end
+            local ids = {}
+            for _, orb in ipairs(data) do
+                if orb and orb.id then
+                    table.insert(ids, orb.id)
+                end
+            end
+            if #ids > 0 then
+                pcall(function()
+                    Network.Fire("Orbs: Collect", ids)
+                end)
+            end
+        end))
+    end
+
+    task.spawn(function()
+        while Running() do
+            task.wait(0.25)
+            pcall(function()
+                local things = workspace:FindFirstChild("__THINGS")
+                local orbsFolder = things and things:FindFirstChild("Orbs")
+                if not orbsFolder then return end
+
+                local sweepIds = {}
+                for _, orb in ipairs(orbsFolder:GetChildren()) do
+                    local id = tonumber(orb.Name) or tonumber(orb:GetAttribute("OrbID")) or tonumber(orb:GetAttribute("id"))
+                    if id then
+                        table.insert(sweepIds, id)
+                    end
+                    if #sweepIds >= 50 then
+                        Network.Fire("Orbs: Collect", sweepIds)
+                        sweepIds = {}
+                    end
+                end
+                if #sweepIds > 0 then
+                    Network.Fire("Orbs: Collect", sweepIds)
+                end
+            end)
+        end
+    end)
+end)
+
+pcall(function()
+    local VirtualUser = game:GetService("VirtualUser")
+
+    local getcons = getconnections or get_signal_cons
+    if type(getcons) == "function" then
+        for _, conn in ipairs(getcons(LocalPlayer.Idled)) do
+            if conn and conn.Disable then
+                conn:Disable()
+            end
+        end
+    end
+
+    AddConnection(LocalPlayer.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end))
+
+    task.spawn(function()
+        while Running() do
+            task.wait(60)
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new(0, 0))
+            end)
+        end
+    end)
+end)
+
+pcall(function()
+    local hookfunc = hookfunction or replaceclosure
+
+    local RealPlayerCmds = LoadModule(Client, "RealPlayerCmds")
+    if RealPlayerCmds and type(RealPlayerCmds.Check) == "function" then
+        if hookfunc then
+            pcall(hookfunc, RealPlayerCmds.Check, function() return true end)
+        end
+        SafePatch(RealPlayerCmds, "Check", function() return true end)
+    end
+
+    local Functions = LoadModule(Library, "Functions")
+    if Functions and type(Functions.IsRealPlayer) == "function" then
+        if hookfunc then
+            pcall(hookfunc, Functions.IsRealPlayer, function(...) return true end)
+        end
+        SafePatch(Functions, "IsRealPlayer", function(...) return true end)
+    end
+
+    pcall(function()
+        local functionsFolder = Library:FindFirstChild("Functions")
+        local isRealPlayerScript = functionsFolder and functionsFolder:FindFirstChild("IsRealPlayer")
+        if isRealPlayerScript and isRealPlayerScript:IsA("ModuleScript") then
+            local ok, isRealPlayerFunc = pcall(dynamicRequire, isRealPlayerScript)
+            if ok and type(isRealPlayerFunc) == "function" and hookfunc then
+                pcall(hookfunc, isRealPlayerFunc, function(...) return true end)
+            end
+        end
+    end)
+
+    if Network and type(Network.Invoke) == "function" then
+        local origInvoke = Network.Invoke
+        if hookfunc then
+            local rawInvoke
+            rawInvoke = hookfunc(Network.Invoke, function(remoteName, ...)
+                if remoteName == "Is Real Player" then
+                    return true
+                end
+                return rawInvoke(remoteName, ...)
+            end)
+        else
+            SafePatch(Network, "Invoke", function(remoteName, ...)
+                if remoteName == "Is Real Player" then
+                    return true
+                end
+                return origInvoke(remoteName, ...)
+            end)
+        end
+    end
+end)
+
+pcall(function()
+    local PlayerPet = LoadModule(Client, "PlayerPet")
+    local CustomPet = LoadModule(Client, "CustomPet")
+
+    if PlayerPet then
+        RegisterPatch(PlayerPet, "CalculateSpeedMultiplier", PlayerPet.CalculateSpeedMultiplier)
+        PlayerPet.CalculateSpeedMultiplier = function(self)
+            return 999
+        end
+
+        local function ApplySpeedToPet(pet)
+            if not pet then return end
+            pet.speedMult = 999
+            if pet.cpet then
+                pcall(function()
+                    pet.cpet:SetSpeed(999)
+                    pet.cpet:Broadcast("petSpeedMult", 999)
+                end)
+            end
+        end
+
+        for _, pet in pairs(PlayerPet.GetAll()) do
+            ApplySpeedToPet(pet)
+        end
+
+        if PlayerPet.Created and PlayerPet.Created.Connect then
+            AddConnection(PlayerPet.Created:Connect(function(pet)
+                task.defer(function()
+                    ApplySpeedToPet(pet)
+                end)
+            end))
+        end
+    end
+
+    if CustomPet then
+        local rawSetSpeed = CustomPet.SetSpeed
+        RegisterPatch(CustomPet, "SetSpeed", rawSetSpeed)
+        CustomPet.SetSpeed = function(self, speed)
+            return rawSetSpeed(self, 999)
+        end
+    end
+end)
+
+pcall(function()
+    local function TryUseUltimate()
+        if not CONFIG.AutoUltimate or not UltimateCmds then return end
+        local save = (SaveMod and SaveMod.Get and SaveMod.Get()) or (Saving and Saving.Get and Saving.Get())
+        if not save then return end
+
+        local equipped = UltimateCmds.GetEquippedItem and UltimateCmds.GetEquippedItem()
+        local ultId = equipped and (equipped._id or (equipped.GetId and equipped:GetId())) or save.EquippedUltimate
+        if not ultId then return end
+
+        local isCharged = (UltimateCmds.IsCharged and UltimateCmds.IsCharged(ultId))
+        local chargePct = (UltimateCmds.GetChargePercentage and UltimateCmds.GetChargePercentage(ultId)) or 0
+
+        if isCharged or chargePct >= 1.0 then
+            local ok, res = pcall(function()
+                return UltimateCmds.Activate(ultId)
+            end)
+            if ok and res then
+
+            end
+        end
+    end
+
+    if SaveMod and SaveMod.GetStatChangedSignal then
+        pcall(function()
+            local ultSignal = SaveMod.GetStatChangedSignal("UltimateCooldowns")
+            if ultSignal and ultSignal.Connect then
+                AddConnection(ultSignal:Connect(function()
+                    if Running() then
+                        TryUseUltimate()
+                    end
+                end))
+            end
+        end)
+    end
+
+    task.spawn(function()
+        while Running() do
+            if CONFIG.AutoUltimate then
+                TryUseUltimate()
+            end
+            task.wait(0.5)
+        end
+    end)
+end)
+
+pcall(function()
+    local function ApplySilentHatch()
+        if not CONFIG.SilentHatch then return end
+
+        local things = workspace:FindFirstChild("__THINGS")
+
+        local function CleanFolder(folder)
+            if not folder then return end
+            for _, child in ipairs(folder:GetChildren()) do
+                if child.Name ~= "Highlight" then
+                    pcall(function() child:Destroy() end)
+                end
+            end
+            AddConnection(folder.ChildAdded:Connect(function(child)
+                if CONFIG.SilentHatch and child.Name ~= "Highlight" then
+                    task.defer(function()
+                        pcall(function() child:Destroy() end)
+                    end)
+                end
+            end))
+        end
+
+        CleanFolder(things and things:FindFirstChild("Eggs"))
+        CleanFolder(things and things:FindFirstChild("RenderedEggs"))
+
+        local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+        local eggOpenGui = pGui and pGui:FindFirstChild("EggOpenAnimation")
+        if eggOpenGui then
+            eggOpenGui.Enabled = false
+            for _, child in ipairs(eggOpenGui:GetChildren()) do
+                pcall(function() child:Destroy() end)
+            end
+            AddConnection(eggOpenGui.ChildAdded:Connect(function(child)
+                if CONFIG.SilentHatch then
+                    task.defer(function()
+                        pcall(function() child:Destroy() end)
+                    end)
+                end
+            end))
+        end
+
+        local EggAnimPayload = LoadModule(Library, "Util.EggAnimPayload")
+        local Signal = LoadModule(Library, "Signal")
+
+        if Network and Network.Fired then
+            pcall(function()
+                local openAnimSignal = Network.Fired("Eggs_PlayOpenAnimation")
+                local getcons = getconnections or get_signal_cons
+                if type(getcons) == "function" then
+                    for _, con in ipairs(getcons(openAnimSignal)) do
+                        if con and con.Disable then
+                            con:Disable()
+                        elseif con and con.Disconnect then
+                            con:Disconnect()
+                        end
+                    end
+                end
+
+                AddConnection(openAnimSignal:Connect(function(eggName, compressedPayload)
+                    if not CONFIG.SilentHatch then return end
+                    local uids = {}
+                    if EggAnimPayload and EggAnimPayload.Decompress then
+                        local decomp = EggAnimPayload.Decompress(compressedPayload)
+                        if type(decomp) == "table" then
+                            for uid, _ in pairs(decomp) do
+                                table.insert(uids, uid)
+                            end
+                        end
+                    end
+
+                    if #uids > 0 and Network.Fire then
+                        Network.Fire("SM_Unmask", uids)
+                    end
+                    if Signal and Signal.Fire then
+                        Signal.Fire("CompletedHatching", eggName, uids)
+                    end
+                end))
+            end)
+        end
+
+        AddConnection(workspace.CurrentCamera:GetPropertyChangedSignal("CameraType"):Connect(function()
+            if CONFIG.SilentHatch and workspace.CurrentCamera.CameraType ~= Enum.CameraType.Custom then
+                workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+            end
+        end))
+    end
+
+    ApplySilentHatch()
+end)
+
+local function GetCharacter()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+end
+
+local function GetHRP()
+    local char = GetCharacter()
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function SafeTeleport(targetPos, keepAnchored)
+    local hrp = GetHRP()
+    if not hrp or not targetPos then return end
+
+    local targetCF: CFrame
+    if typeof(targetPos) == "CFrame" then
+        targetCF = targetPos
+    else
+        targetCF = CFrame.new(targetPos)
+    end
+
+    local currentDist = (hrp.Position - targetCF.Position).Magnitude
+    if currentDist > 2.5 then
+        hrp.CFrame = targetCF
+        if keepAnchored then
+            hrp.Anchored = true
+            pcall(function()
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+        else
+            hrp.Anchored = false
+        end
+        task.wait(0.2)
+    end
+end
+
+local function GetCoins()
+    if CurrencyCmds and CurrencyCmds.Get then
+        return CurrencyCmds.Get("HatchWarCoins") or 0
+    end
+    return 0
+end
+
+local function GetHatchWarInstance()
+    if HatchWarCmds and HatchWarCmds.Instance then
+        return HatchWarCmds.Instance()
+    end
+    return nil
+end
+
+local function GetCurrentMaxUnlockedZone()
+    if InstanceZoneCmds and InstanceZoneCmds.GetMaximumOwnedZoneNumber then
+        return InstanceZoneCmds.GetMaximumOwnedZoneNumber() or 1
+    end
+
+    if InstanceZoneCmds and InstanceZoneCmds.IsUnlocked then
+        for z = 6, 1, -1 do
+            if InstanceZoneCmds.IsUnlocked(z) then
+                return z
+            end
+        end
+    end
+    return 1
+end
+
+local function IsMaxZoneUnlocked()
+    local maxZone = GetCurrentMaxUnlockedZone()
+    local targetZone = CONFIG.EndGame.TargetZone or 6
+    return maxZone >= targetZone
+end
+
+local function IsActuallyInHatchWar()
+    if not InstancingCmds then
+        InstancingCmds = LoadModule(Client, "InstancingCmds")
+    end
+    if not InstancingCmds or not InstancingCmds.IsInInstance or not InstancingCmds.GetInstanceID then
+        return false
+    end
+
+    local inInstance = InstancingCmds.IsInInstance()
+    local currentId = InstancingCmds.GetInstanceID()
+    if not inInstance or currentId ~= "HatchWar" then
+        return false
+    end
+
+    local things = workspace:FindFirstChild("__THINGS")
+    local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+    local active = container and container:FindFirstChild("Active")
+    local hw = active and active:FindFirstChild("HatchWar")
+    if not hw then
+        return false
+    end
+
+    return true
+end
+
+local function EnsureInHatchWar()
+
+    if IsActuallyInHatchWar() then
+        return true
+    end
+
+    if not InstancingCmds then
+        InstancingCmds = LoadModule(Client, "InstancingCmds")
+    end
+
+    if InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance() and InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID() == "HatchWar" then
+        return true
+    end
+
+    print("[event] Joining HatchWar...")
+
+    local function TriggerJoin()
+        pcall(function()
+            if InstancingCmds and InstancingCmds.Enter then
+                InstancingCmds.Enter("HatchWar")
+            end
+        end)
+        pcall(function()
+            if Network and Network.Invoke then
+                Network.Invoke("Instancing_PlayerEnterInstance", "HatchWar")
+            end
+        end)
+    end
+
+    TriggerJoin()
+
+    local waitJoin = os.clock()
+    local retried = false
+    while Running() and (os.clock() - waitJoin < 15) do
+        task.wait(0.5)
+        if IsActuallyInHatchWar() then
+            break
+        end
+        if (os.clock() - waitJoin > 6) and not retried then
+            retried = true
+            TriggerJoin()
+        end
+    end
+
+    if IsActuallyInHatchWar() then
+        task.wait(1.0)
+        print("[event] Joined HatchWar successfully (map ready).")
+        return true
+    else
+        warn("[event] Failed to join HatchWar or map not loaded.")
+        return false
+    end
+end
+
+local function InstallMissBypass(inst)
+    if not inst or not inst.FireCustom then return end
+    if inst._MissBypassed then return end
+    inst._MissBypassed = true
+
+    local rawFire = inst.FireCustom
+    inst.FireCustom = function(self, name, ...)
+        if tostring(name) == "HW_Boss_Miss" then
+            return
+        end
+        return rawFire(self, name, ...)
+    end
+    RegisterPatch(inst, "FireCustom", rawFire)
+end
+
+local function HasAutoFarmGamepass()
+
+    local Gamepasses = LoadModule(Client, "Gamepasses")
+    if Gamepasses and Gamepasses.Owns then
+        local ok, owns = pcall(Gamepasses.Owns, "Auto Farm")
+        if ok and owns == true then
+            return true
+        end
+
+        local GamepassesDir = LoadModule(Directory, "Gamepasses")
+        if GamepassesDir then
+            local okEntry, gpEntry = pcall(function() return GamepassesDir["Auto Farm"] end)
+            if okEntry and gpEntry then
+                local ok2, owns2 = pcall(Gamepasses.Owns, gpEntry)
+                if ok2 and owns2 == true then
+                    return true
+                end
+            end
+        end
+    end
+
+    local inst = InstancingCmds and InstancingCmds.Get and InstancingCmds.Get()
+    if inst and inst.config and inst.config.FreeAutoFarm == true then
+        return true
+    end
+
+    local save = (SaveMod and SaveMod.Get and SaveMod.Get()) or (Saving and Saving.Get and Saving.Get())
+    if save and save.Gamepasses then
+        local GamepassesDir = LoadModule(Directory, "Gamepasses")
+        local gpEntry = GamepassesDir and GamepassesDir["Auto Farm"]
+        local prodId = gpEntry and gpEntry.ProductId
+        if save.Gamepasses["Auto Farm"] or save.Gamepasses["AutoFarm"] or (prodId and save.Gamepasses[prodId]) then
+            return true
+        end
+    end
+    return false
+end
+
+local function GetZoneGroundPart(zoneNum)
+    local zNum = tonumber(zoneNum) or 6
+    local things = workspace:FindFirstChild("__THINGS")
+
+    local fakeBreakZones = things and things:FindFirstChild("__FAKE_INSTANCE_BREAK_ZONES")
+    if fakeBreakZones then
+        for _, folder in ipairs(fakeBreakZones:GetChildren()) do
+            local p = folder:FindFirstChild("Zone" .. tostring(zNum))
+            if p and p:IsA("BasePart") then
+                return p
+            end
+        end
+    end
+
+    local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+    local active = container and container:FindFirstChild("Active")
+    local hw = active and active:FindFirstChild("HatchWar")
+    local zg = hw and hw:FindFirstChild("ZONE_GROUND")
+    if zg then
+        local p = zg:FindFirstChild(tostring(zNum))
+        if p and p:IsA("BasePart") then
+            return p
+        end
+    end
+
+    local inst = GetHatchWarInstance()
+    local bz = inst and inst.breakableZones and inst.breakableZones:FindFirstChild("Zone" .. tostring(zNum))
+    if bz then
+        if bz:IsA("BasePart") then
+            return bz
+        elseif bz:IsA("Model") then
+            return bz.PrimaryPart or bz:FindFirstChildWhichIsA("BasePart") or bz
+        elseif bz:IsA("Folder") then
+            return bz:FindFirstChildWhichIsA("BasePart")
+        end
+    end
+    return nil
+end
+
+local function GetZoneGroundCFrame(zoneNum)
+    local p = GetZoneGroundPart(zoneNum)
+    if p then
+        if p:IsA("BasePart") then
+            return p.CFrame + Vector3.new(0, 3, 0)
+        elseif p:IsA("Model") then
+            return p:GetPivot() + Vector3.new(0, 3, 0)
+        end
+    end
+
+    if tonumber(zoneNum) == 6 then
+        return CFrame.new(7540.8, 16.5, 21998.2)
+    end
+    return CFrame.new(7540.8, 16.5, 21998.2)
+end
+
+local lastAutoFarmZone = nil
+
+local function EnsureAutoFarmActiveAtZone(zoneNum)
+    if not HasAutoFarmGamepass() then
+        return false
+    end
+
+    if not IsMaxZoneUnlocked() then
+        return false
+    end
+
+    local targetZone = tonumber(zoneNum) or 6
+
+    if AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() then
+        if lastAutoFarmZone == targetZone then
+            return true
+        end
+    end
+
+    local targetCF = GetZoneGroundCFrame(targetZone)
+    print(string.format("[auto farm] Enabling Zone %d...", targetZone))
+
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = targetCF
+        hrp.Anchored = true
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    else
+        SafeTeleport(targetCF, true)
+    end
+    task.wait(0.3)
+
+    pcall(function()
+        if AutoFarmCmds and AutoFarmCmds.Enable then
+            AutoFarmCmds.Enable()
+        elseif Network and Network.Invoke then
+            Network.Invoke("AutoFarm_Enable")
+        end
+    end)
+
+    local startTime = os.clock()
+    local success = false
+    while os.clock() - startTime < 1.5 do
+        if AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() then
+            success = true
+            break
+        end
+        task.wait(0.1)
+    end
+
+    hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Anchored = false
+    end
+
+    if success then
+        lastAutoFarmZone = targetZone
+        print(string.format("[auto farm] Zone %d enabled (true).", targetZone))
+        return true
+    else
+        print(string.format("[auto farm] Zone %d failed (server unconfirmed).", targetZone))
+        return false
+    end
+end
+
+local function GetRecommendedTargetCoins(zoneNum)
+    local recCoins, recLuck = 0, 0
+    if HatchWarBoss and HatchWarBoss.Recommended then
+        pcall(function()
+            local rc, rl = HatchWarBoss.Recommended(zoneNum)
+            recCoins = rc or 0
+            recLuck = rl or 0
+        end)
+    end
+
+    if recCoins <= 0 then
+        local fallbackCoins = {
+            [1] = 30000,
+            [2] = 210000,
+            [3] = 1470000,
+            [4] = 14700000,
+            [5] = 102900000,
+            [6] = 720300000,
+        }
+        recCoins = fallbackCoins[zoneNum] or 30000
+    end
+
+    local ratio = CONFIG.RecommendedRatio or 0.90
+    local targetCoins = math.floor(recCoins * ratio)
+    return targetCoins, recCoins, recLuck
+end
+
+local function GetLocalPets()
+    local pets = {}
+    if PlayerPet and PlayerPet.GetAll then
+        for _, pet in pairs(PlayerPet.GetAll()) do
+            if pet and (pet.owner == LocalPlayer or pet.owner == LocalPlayer.Character) and not pet.destroyed then
+                table.insert(pets, pet)
+            end
+        end
+    end
+    return pets
+end
+
+local function IsChestBreakable(b)
+    if not b or not b:IsA("Model") or not b.Parent then return false end
+    local bId = b:GetAttribute("BreakableID")
+    if bId and string.find(string.lower(bId), "chest") then
+        return true
+    end
+    local bCls = b:GetAttribute("BreakableClass")
+    if bCls and string.find(string.lower(bCls), "chest") then
+        return true
+    end
+    if b:GetAttribute("CandyChest") == true then
+        return true
+    end
+    if string.find(string.lower(b.Name), "chest") then
+        return true
+    end
+    return false
+end
+
+local function GetZoneBreakables(zoneNum)
+    local valid = {}
+    local things = workspace:FindFirstChild("__THINGS")
+    local bFolder = things and things:FindFirstChild("Breakables")
+    if not bFolder then return valid end
+
+    local targetCF = GetZoneGroundCFrame(zoneNum or 6)
+    local zPos = targetCF.Position
+    local targetArea = "Main_" .. tostring(zoneNum or 6)
+
+    for _, b in ipairs(bFolder:GetChildren()) do
+        if b:IsA("Model") and b.Name ~= "Highlight" then
+            local area = b:GetAttribute("AreaID")
+            if area == targetArea then
+                table.insert(valid, b)
+            elseif not area and b:GetPivot() then
+                local dist = (b:GetPivot().Position - zPos).Magnitude
+                if dist <= 85 then
+                    table.insert(valid, b)
+                end
+            end
+        end
+    end
+
+    if CONFIG.League and CONFIG.League.PrioritizeChests and #valid > 1 then
+        table.sort(valid, function(a, b)
+            local aIs = IsChestBreakable(a)
+            local bIs = IsChestBreakable(b)
+            if aIs and not bIs then return true end
+            if not aIs and bIs then return false end
+            return false
+        end)
+    end
+
+    return valid
+end
+
+local function StartAutoTapWorker(getZoneOrZoneNum, isRunningCheck)
+    local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
+    if not netDamage then return end
+
+    task.spawn(function()
+        local currentTarget = nil
+        while Running() and (not isRunningCheck or isRunningCheck()) do
+            local zone = typeof(getZoneOrZoneNum) == "function" and getZoneOrZoneNum() or getZoneOrZoneNum or 6
+            local hrp = GetHRP()
+            local pPos = hrp and hrp.Position
+
+            if not currentTarget or not currentTarget.Parent or not currentTarget:IsA("Model") then
+                currentTarget = nil
+                local valid = GetZoneBreakables(zone)
+                if #valid > 0 then
+
+                    if pPos then
+                        table.sort(valid, function(a, b)
+                            if CONFIG.League and CONFIG.League.PrioritizeChests then
+                                local aIs = IsChestBreakable(a)
+                                local bIs = IsChestBreakable(b)
+                                if aIs and not bIs then return true end
+                                if not aIs and bIs then return false end
+                            end
+                            local pA = a:GetPivot()
+                            local pB = b:GetPivot()
+                            local distA = pA and (pA.Position - pPos).Magnitude or 9999
+                            local distB = pB and (pB.Position - pPos).Magnitude or 9999
+                            return distA < distB
+                        end)
+                    end
+                    currentTarget = valid[1]
+                end
+            end
+
+            if currentTarget and currentTarget.Parent then
+                if SignalMod and SignalMod.Fire then
+                    SignalMod.Fire("AutoClicker_Nearby", currentTarget.Name)
+                else
+                    netDamage:FireServer(currentTarget.Name)
+                end
+            end
+
+            task.wait(0.07)
+        end
+    end)
+end
+
+local function FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
+    local targetZone = zoneNum or 6
+    local targetCF = GetZoneGroundCFrame(targetZone)
+
+    if CONFIG.EndGame.Hatch == true and targetZone == (CONFIG.EndGame.TargetZone or 6) then
+        targetCF = EGG_STAND_CFRAMES[CONFIG.EndGame.EggName or "Manor Egg"] or (CONFIG.EndGame.EggSpot and CFrame.new(CONFIG.EndGame.EggSpot)) or CFrame.new(7537.90, 16.21, 21962.36)
+    end
+
+    local hasPass = HasAutoFarmGamepass()
+    local targetPct = recCoins and recCoins > 0 and ((targetCoins / recCoins) * 100) or 90
+    print(string.format("[auto map] Farming coins: %s / %s (Zone %d)",
+        FormatNumber(GetCoins()), FormatNumber(targetCoins), targetPct, targetZone))
+
+    SafeTeleport(targetCF)
+    task.wait(0.25)
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then hrp.Anchored = true end
+
+    local farmStart = os.clock()
+    local lastPrint = os.clock()
+
+    local autoTapActive = true
+    StartAutoTapWorker(targetZone, function()
+        return autoTapActive and GetCoins() < targetCoins
+    end)
+
+    while Running() and GetCoins() < targetCoins and (os.clock() - farmStart < 90) do
+        local valid = GetZoneBreakables(targetZone)
+        local pets = GetLocalPets()
+
+        if #valid > 0 and #pets > 0 then
+            for i, pet in ipairs(pets) do
+                local targetBreakable = valid[((i - 1) % #valid) + 1]
+                if targetBreakable and targetBreakable.Parent then
+                    pcall(function()
+                        if pet:GetTarget() ~= targetBreakable then
+                            pet:SetTarget(targetBreakable)
+                        end
+                    end)
+                end
+            end
+        end
+
+        task.wait(0.15)
+
+        if os.clock() - lastPrint > 3 then
+            lastPrint = os.clock()
+            local cur = GetCoins()
+            local pct = targetCoins > 0 and (cur / targetCoins * 100) or 0
+            print(string.format("[auto map] Coins: %s / %s (%.1f%%)",
+                FormatNumber(cur), FormatNumber(targetCoins), pct))
+        end
+    end
+
+    autoTapActive = false
+
+    local finalCoins = GetCoins()
+    hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then hrp.Anchored = false end
+
+    if finalCoins >= targetCoins then
+        print(string.format("[auto map] Coin target reached: %s / %s",
+            FormatNumber(finalCoins), FormatNumber(targetCoins)))
+    end
+
+    return finalCoins >= targetCoins
+end
+
+local function EnsureSufficientCoins(targetCoins, recCoins, zoneNum)
+    local coins = GetCoins()
+    if coins >= targetCoins then return true end
+
+    return FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
+end
+
+local function ForceCleanupBossFight(keepAnchored)
+    pcall(function()
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp and not keepAnchored then
+            hrp.Anchored = false
+        end
+    end)
+    pcall(function()
+        local GUIMod = LoadModule(Client, "GUI")
+        local bossGui = GUIMod and GUIMod.HatchWarBoss and GUIMod.HatchWarBoss()
+        if bossGui then
+            bossGui.Enabled = false
+        end
+    end)
+    pcall(function()
+        local Variables = LoadModule(Library, "Variables")
+        local hideUI = Variables and Variables.Locks and Variables.Locks.HideUI
+        if hideUI and hideUI:IsLocked() then
+            hideUI._obtainedCount = 0
+            if hideUI.Modified then
+                hideUI.Modified:Fire()
+            end
+        end
+    end)
+    pcall(function()
+        if CirclesModule and CirclesModule.Stop then
+            CirclesModule.Stop()
+        end
+        if InputModule and InputModule.Stop then
+            InputModule.Stop()
+        end
+    end)
+end
+
+local function SweepLuckyOrbs(targetBankRatio)
+    targetBankRatio = targetBankRatio or 0.85
+    local OrbsCmd = LoadModule(Client, "HatchWarCmds") and LoadModule(Client.HatchWarCmds, "Orbs")
+    if not OrbsCmd or not OrbsCmd.Bank then return end
+
+    local curBank, maxBank = OrbsCmd.Bank()
+    local target = math.floor(maxBank * targetBankRatio)
+    if curBank >= target then return end
+
+    local inst = GetHatchWarInstance()
+    if not inst then return end
+
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    print(string.format("[auto map] Sweeping Orbs: %d / %d (target: %d)", curBank, maxBank, target))
+    local oldPos = hrp.CFrame
+    local sweepStart = os.clock()
+
+    while Running() and (os.clock() - sweepStart < 12) do
+        curBank, maxBank = OrbsCmd.Bank()
+        if curBank >= target then break end
+
+        local sync = nil
+        pcall(function()
+            sync = inst:InvokeCustom("HW_Orbs_Sync")
+        end)
+
+        local foundAny = false
+        if type(sync) == "table" then
+            for id, orb in pairs(sync) do
+                curBank, maxBank = OrbsCmd.Bank()
+                if curBank >= target then break end
+
+                if orb and orb.Position then
+                    foundAny = true
+                    SafeTeleport(CFrame.new(orb.Position + Vector3.new(0, 1.5, 0)))
+                    task.wait(0.18)
+                    pcall(function()
+                        inst:InvokeCustom("HW_Orbs_Claim", id)
+                    end)
+                end
+            end
+        end
+
+        if not foundAny then
+            task.wait(0.4)
+        end
+    end
+
+    SafeTeleport(oldPos)
+    task.wait(0.2)
+    local endBank = OrbsCmd.Bank()
+    print(string.format("[auto map] Orbs complete: %d / %d", endBank, maxBank, endBank * 1.5))
+end
+
+local totalFights = 0
+local currentCycle = 1
+
+local function FightBossAtZone(zoneNum, skipCoinCheck)
+    local info = BOSS_INFO[zoneNum]
+    if not info then return false end
+
+    if not EnsureInHatchWar() then
+        task.wait(1.5)
+        return false
+    end
+
+    local inst = GetHatchWarInstance()
+    if not inst or not BossModule then
+        task.wait(1)
+        return false
+    end
+
+    InstallMissBypass(inst)
+
+    local targetCoins, fullRecCoins, recLuck = GetRecommendedTargetCoins(zoneNum)
+    if not skipCoinCheck then
+        if not EnsureSufficientCoins(targetCoins, fullRecCoins, zoneNum) then
+            return false
+        end
+    else
+        if GetCoins() < (info.MinCoins or 98000) then
+            return false
+        end
+    end
+
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
+        local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
+        if not afReady or lastAutoFarmZone ~= zoneNum then
+            local afOk = EnsureAutoFarmActiveAtZone(zoneNum)
+            if not afOk then
+                warn(string.format("[auto boss] Zone %d AutoFarm not ready -> Delay boss.", zoneNum))
+                return false
+            end
+        end
+    end
+
+    runState.isFightingBoss = true
+
+    local bossSpot = info.Spot
+    local bFolder = inst.model and inst.model:FindFirstChild("INTERACT")
+        and inst.model.INTERACT:FindFirstChild("Bosses")
+        and inst.model.INTERACT.Bosses:FindFirstChild("Boss" .. tostring(zoneNum))
+    if bFolder and bFolder:FindFirstChild("Idle") then
+        bossSpot = bFolder.Idle.CFrame + Vector3.new(0, 2, 0)
+    end
+
+    local hrp = GetHRP()
+    local isAlreadyAtBoss = hrp and (hrp.Position - bossSpot.Position).Magnitude <= 6
+    if not isAlreadyAtBoss then
+        SafeTeleport(bossSpot)
+        task.wait(0.3)
+    end
+    hrp = GetHRP()
+    if hrp then hrp.Anchored = true end
+
+    pcall(function()
+        inst:InvokeCustom("HW_Contests_SetFlameStop", 3)
+    end)
+
+    if not BossModule.IsFighting() then
+        local ok, err = inst:InvokeCustom("HW_Boss_Start", zoneNum)
+        if not ok and tostring(err) ~= "You are already in a boss fight!" then
+            SafeTeleport(bossSpot)
+            task.wait(0.4)
+            inst:InvokeCustom("HW_Boss_Start", zoneNum)
+        end
+
+        local waitStart = os.clock()
+        while Running() and not BossModule.IsFighting() and (os.clock() - waitStart < 4) do
+            task.wait(0.1)
+        end
+    end
+
+    if not BossModule.IsFighting() then
+        ForceCleanupBossFight(skipCoinCheck)
+        return false
+    end
+
+    totalFights = totalFights + 1
+    local inEvent = (InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance() and InstancingCmds.GetInstanceID() == "HatchWar") == true
+    local curCoins = GetCoins()
+    print(string.format("[auto map] Zone %d || Round: %d || Boss: %s || Coins: %s || event: %s || cycle: %d",
+        zoneNum, totalFights, info.Name, FormatNumber(curCoins), tostring(inEvent), currentCycle))
+
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    local instancesFolder = pGui and pGui:FindFirstChild("_INSTANCES")
+    local bossGui = instancesFolder and instancesFolder:FindFirstChild("HatchWarBoss")
+    if bossGui then
+        local tapHint = bossGui:FindFirstChild("TapHint")
+        if tapHint then pcall(function() tapHint:Destroy() end) end
+        local tth = bossGui:FindFirstChild("TapToHatch")
+        if tth then tth.Visible = false end
+    end
+
+    local fightStart = os.clock()
+    local maxFightDuration = 28
+
+    task.spawn(function()
+        while Running() and BossModule.IsFighting() and (os.clock() - fightStart < maxFightDuration) do
+            if GetCoins() <= 0 then break end
+            if CirclesModule and CirclesModule.TapOldest then
+                while CirclesModule.TapOldest(function()
+                    inst:FireCustom("HW_Boss_Tap", "circle")
+                    if InputModule and InputModule.Count then
+                        pcall(InputModule.Count)
+                    end
+                end) do
+                end
+            end
+            task.wait(0.02)
+        end
+    end)
+
+    while Running() and BossModule.IsFighting() do
+
+        if os.clock() - fightStart >= maxFightDuration then
+            print("[auto map] Boss timeout (28s) -> Exit.")
+            break
+        end
+
+        if GetCoins() <= 0 then
+            print("[auto map] Out of coins in boss -> Exit to farm.")
+            break
+        end
+
+        inst:FireCustom("HW_Boss_Tap", "egg")
+        if InputModule and InputModule.Count then
+            pcall(InputModule.Count)
+        end
+        if SprayModule and SprayModule.Push then
+            pcall(SprayModule.Push)
+        end
+        task.wait(0.05)
+    end
+
+    if skipCoinCheck then
+        task.wait(0.35)
+        ForceCleanupBossFight(true)
+    else
+        task.wait(1.5)
+        ForceCleanupBossFight(false)
+        runState.isFightingBoss = false
+    end
+    return true
+end
+
+local function GetWandCount()
+    local MiscItem = LoadModule(Library, "Items") and LoadModule(Library.Items, "MiscItem")
+    if MiscItem then
+        local ok, count = pcall(function()
+            return MiscItem("Hatch War Wand"):CountExact(LocalPlayer)
+        end)
+        if ok and type(count) == "number" then
+            return count
+        end
+    end
+    local Save = LoadModule(Client, "Save")
+    local save = Save and Save.Get and Save.Get()
+    if save and save.Inventory and save.Inventory.Misc then
+        for _, item in pairs(save.Inventory.Misc) do
+            if item and item.id == "Hatch War Wand" then
+                return item._am or 1
+            end
+        end
+    end
+    return 0
+end
+
+local function GetLollipopCount()
+    local MiscItem = LoadModule(Library, "Items") and LoadModule(Library.Items, "MiscItem")
+    if MiscItem then
+        local ok, count = pcall(function()
+            return MiscItem("Hatch War Lollipop"):CountExact(LocalPlayer)
+        end)
+        if ok and type(count) == "number" then
+            return count
+        end
+    end
+    local Save = LoadModule(Client, "Save")
+    local save = Save and Save.Get and Save.Get()
+    if save and save.Inventory and save.Inventory.Misc then
+        for _, item in pairs(save.Inventory.Misc) do
+            if item and (item.id == "Hatch War Lollipop" or tostring(item.id):lower():find("lollipop")) then
+                return item._am or 1
+            end
+        end
+    end
+    return 0
+end
+
+local function GetMachinePad()
+    local things = workspace:FindFirstChild("__THINGS")
+    local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+    local active = container and container:FindFirstChild("Active")
+    local hw = active and active:FindFirstChild("HatchWar")
+    local mach = hw and hw:FindFirstChild("INTERACT")
+        and hw.INTERACT:FindFirstChild("Machines")
+        and hw.INTERACT.Machines:FindFirstChild("HatchWarUpgradeMachine")
+    local pad = mach and (mach:FindFirstChild("Pad") or mach.PrimaryPart)
+    if pad then
+        return pad.CFrame + Vector3.new(0, 1.5, 0)
+    end
+    return UPGRADE_MACHINE_CFRAME + Vector3.new(0, 1.5, 0)
+end
+
+local lastUpgradeCheck = 0
+
+local function CheckAndBuyUpgrades(force)
+    if not CONFIG.AutoUpgrade then return false end
+    if IsBusy() and not force then return false end
+
+    local UpgradesMod = LoadModule(Client.HatchWarCmds, "Upgrades")
+    if not UpgradesMod and Client:FindFirstChild("HatchWarCmds") then
+        pcall(function()
+            UpgradesMod = dynamicRequire(Client.HatchWarCmds:FindFirstChild("Upgrades"))
+        end)
+    end
+    if not UpgradesMod or not UpgradesMod.Tracks then return false end
+
+    local affordableTracks = {}
+    for _, track in ipairs(UpgradesMod.Tracks()) do
+        if UpgradesMod.CanAfford and UpgradesMod.CanAfford(track) then
+            table.insert(affordableTracks, track)
+        end
+    end
+
+    if #affordableTracks == 0 then
+        return false
+    end
+
+    local hrp = GetHRP()
+    local returnCF = hrp and hrp.CFrame
+    local wasAnchored = hrp and hrp.Anchored
+
+    local machinePos = GetMachinePad()
+    SafeTeleport(machinePos)
+    task.wait(0.35)
+
+    pcall(function()
+        if Network and Network.Fire then
+            Network.Fire("Machines: Mark Approached", "HatchWarUpgradeMachine")
+        end
+    end)
+
+    local totalBought = 0
+    for _, track in ipairs(affordableTracks) do
+        local ok = false
+        pcall(function()
+            if EventUpgradeCmds and EventUpgradeCmds.Purchase then
+                ok = EventUpgradeCmds.Purchase(track._id)
+            elseif Network and Network.Invoke then
+                ok = Network.Invoke("EventUpgrades: Purchase", track._id)
+            end
+        end)
+        if ok then
+            totalBought = totalBought + 1
+            task.wait(0.12)
+        end
+    end
+
+    pcall(function()
+        local TabController = LoadModule(Client, "TabController")
+        if TabController and TabController.CloseTab then
+            TabController.CloseTab()
+        end
+    end)
+
+    if returnCF then
+        SafeTeleport(returnCF)
+        task.wait(0.15)
+        local curHrp = GetHRP()
+        if curHrp and wasAnchored then
+            curHrp.Anchored = true
+        end
+
+        task.defer(function()
+            local valid = GetZoneBreakables(CONFIG.EndGame.TargetZone or 6)
+            local pets = GetLocalPets()
+            if #valid > 0 and #pets > 0 then
+                for i, pet in ipairs(pets) do
+                    local t = valid[((i - 1) % #valid) + 1]
+                    if t and t.Parent then
+                        pcall(function() pet:SetTarget(t) end)
+                    end
+                end
+            end
+            local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
+            if netDamage and #valid > 0 and valid[1].Parent then
+                netDamage:FireServer(valid[1].Name)
+            end
+        end)
+    end
+
+    return totalBought > 0
+end
+
+local function CheckAndBuyEggSlots()
+    if not CONFIG.AutoBuyEggSlots then return end
+    pcall(function()
+        local SaveMod = LoadModule(Client, "Save")
+        local RankCmds = LoadModule(Client, "RankCmds")
+        local CurrencyCmds = LoadModule(Client, "CurrencyCmds")
+        local Balancing = LoadModule(Library, "Balancing")
+
+        if not SaveMod or not RankCmds or not Network then return end
+
+        local save = SaveMod.Get()
+        if not save then return end
+
+        local purchased = save.EggSlotsPurchased or 0
+        local maxPurchasable = (RankCmds.GetMaxPurchasableEggSlots and RankCmds.GetMaxPurchasableEggSlots()) or 0
+
+        if purchased < maxPurchasable then
+            local nextSlot = purchased + 1
+            while nextSlot <= maxPurchasable and Running() do
+                local bundleEnd, bundleSize, prevBundleEnd = RankCmds.GetEggBundle(nextSlot)
+                if not bundleEnd or bundleEnd <= purchased then break end
+
+                local cost = 0
+                if Balancing and Balancing.CalcEggSlotPrice then
+                    local startSlot = bundleEnd - bundleSize
+                    for i = 1, bundleSize do
+                        cost = cost + Balancing.CalcEggSlotPrice(startSlot + i)
+                    end
+                end
+
+                local diamonds = (CurrencyCmds and CurrencyCmds.Get and CurrencyCmds.Get("Diamonds")) or 0
+                if diamonds >= cost then
+                    local success = Network.Invoke("EggHatchSlotsMachine_RequestPurchase", bundleEnd)
+                    if success then
+
+                        purchased = bundleEnd
+                        nextSlot = bundleEnd + 1
+                        task.wait(0.2)
+                    else
+                        break
+                    end
+                else
+                    break
+                end
+            end
+        end
+    end)
+end
+
+local function GetBloodMoonState()
+    if HatchWarMoon and HatchWarMoon.State then
+        local ok, s = pcall(HatchWarMoon.State)
+        if ok and s then return s end
+    end
+    return "down"
+end
+
+local function GetBloodMoonNextRise()
+    if HatchWarMoon and HatchWarMoon.NextRise then
+        local ok, nr = pcall(HatchWarMoon.NextRise)
+        if ok and nr then return nr end
+    end
+    return nil
+end
+
+local lastBoosterCheck = 0
+local lastSpellUsedRound = -1
+local function AutoUseEventBoosters()
+    if os.clock() - lastBoosterCheck < 2.5 then return end
+    lastBoosterCheck = os.clock()
+
+    local Save = LoadModule(Client, "Save")
+    local save = Save and Save.Get and Save.Get()
+    if not save or not Network then return end
+
+    local inventory = (save.Inventory and save.Inventory.Consumable) or {}
+    local Bursts = LoadModule(Util, "HatchWarBursts")
+
+    local function FindConsumable(targetId)
+        local candidates = {}
+        for uid, item in pairs(inventory) do
+            if item and item.id == targetId and (item._am or 1) > 0 then
+                local tier = tonumber(item.tn or item.tier) or 1
+                table.insert(candidates, { uid = uid, tier = tier, amount = item._am or 1 })
+            end
+        end
+        if #candidates == 0 then return nil end
+        table.sort(candidates, function(a, b) return a.tier < b.tier end)
+        return candidates[1]
+    end
+
+    if CONFIG.EndGame.Boss == true or runState.isFightingBoss == true then
+        local currentFightNum = totalFights or 0
+        if currentFightNum ~= lastSpellUsedRound then
+            lastSpellUsedRound = currentFightNum
+            local item = FindConsumable("Lucky Spell")
+            if item then
+                print(string.format("[booster] Used Lucky Spell (Tier %d) [left: %d]",
+                    item.tier, item.amount))
+                pcall(function()
+                    Network.Invoke("Consumables_Consume", item.uid, 1)
+                end)
+            end
+        end
+    end
+
+    if CONFIG.EndGame.Hatch == true or runState.isHatching == true then
+        local brewTier = Bursts and Bursts.BestArmed and Bursts.BestArmed(LocalPlayer, "Brew") or 0
+        if brewTier == 0 then
+            local item = FindConsumable("Lucky Brew")
+            if item then
+                print(string.format("[booster] Used Soul Lantern (Tier %d) [left: %d]",
+                    item.tier, item.amount))
+                pcall(function()
+                    Network.Invoke("Consumables_Consume", item.uid, 1)
+                end)
+            end
+        end
+    end
+end
+
+local lastFlagCheck = 0
+
+local function GetCurrentFlagContext()
+    local MapCmdsMod = LoadModule(Client, "MapCmds")
+    local instInfo = MapCmdsMod and MapCmdsMod.GetCurrentInstanceInfo and MapCmdsMod.GetCurrentInstanceInfo()
+    local BreakablesTypes = LoadModule(Types, "Breakables")
+    if instInfo then
+        local pType = (BreakablesTypes and BreakablesTypes.ParentType and BreakablesTypes.ParentType.Instance) or 2
+        return pType, instInfo.InstanceId, instInfo.AreaId
+    end
+    local pType = (BreakablesTypes and BreakablesTypes.ParentType and BreakablesTypes.ParentType.Zone) or 1
+    local currentZone = (MapCmdsMod and MapCmdsMod.GetCurrentZone and MapCmdsMod.GetCurrentZone()) or "Spawn"
+    return pType, currentZone, nil
+end
+
+local function FindFlagInInventory(targetFlagId)
+    local Save = LoadModule(Client, "Save")
+    local save = Save and Save.Get and Save.Get()
+    local misc = save and save.Inventory and save.Inventory.Misc
+    if not misc then return nil end
+
+    for uid, item in pairs(misc) do
+        if item and item.id == targetFlagId and (item._am or 1) > 0 then
+            return { uid = uid, amount = item._am or 1 }
+        end
+    end
+    return nil
+end
+
+local function PlaceFlagMaxSlots(flagId, uid, amount)
+    if not amount or amount <= 0 or not uid then return false end
+    local FlexibleFlagCmds = LoadModule(Client, "FlexibleFlagCmds")
+    local MapCmdsMod = LoadModule(Client, "MapCmds")
+    if not FlexibleFlagCmds or not FlexibleFlagCmds.Consume then return false end
+
+    local targetZone = CONFIG.EndGame.TargetZone or 6
+    local farmCF = GetZoneGroundCFrame(targetZone)
+    local hrp = GetHRP()
+    local originalCF = hrp and hrp.CFrame
+    local wasAnchored = hrp and hrp.Anchored
+
+    local inBox = MapCmdsMod and MapCmdsMod.IsInDottedBox and MapCmdsMod.IsInDottedBox()
+    if not inBox or wasAnchored then
+        if hrp then
+            hrp.Anchored = false
+            hrp.CFrame = farmCF
+        end
+        task.wait(0.4)
+    end
+
+    local ok, res = pcall(function()
+        return FlexibleFlagCmds.Consume(flagId, uid, amount)
+    end)
+
+    if ok and res ~= false then
+        print(string.format("[flags] Placed %d x %s", amount, flagId))
+    else
+        warn(string.format("[flags] Place %s failed: %s", flagId, tostring(res)))
+    end
+
+    if not inBox and originalCF and hrp then
+        hrp.CFrame = originalCF
+        task.wait(0.15)
+        if wasAnchored then
+            hrp.Anchored = true
+        end
+    end
+
+    return ok and res ~= false
+end
+
+local function AutoManageFlags()
+    if not CONFIG.AutoFlags then return end
+    if os.clock() - lastFlagCheck < 5.0 then return end
+    lastFlagCheck = os.clock()
+
+    local FlexibleFlagCmds = LoadModule(Client, "FlexibleFlagCmds")
+    if not FlexibleFlagCmds then return end
+
+    local BossMod = LoadModule(Client.HatchWarCmds, "Boss")
+    if BossMod and BossMod.IsFighting and BossMod.IsFighting() then
+        return
+    end
+
+    local pType, pId, aId = GetCurrentFlagContext()
+    local activeFlag = FlexibleFlagCmds.GetActiveFlag and FlexibleFlagCmds.GetActiveFlag(pType, pId, aId)
+    local now = workspace:GetServerTimeNow()
+    local timeLeft = activeFlag and (activeFlag.EndTime - now) or 0
+
+    if activeFlag and timeLeft > 0 then
+        local activeId = activeFlag.FlagId
+
+        if activeId == "Fortune Flag" or activeId == "Coins Flag" then
+            local slotsNeeded = FlexibleFlagCmds.GetMaxPlace and FlexibleFlagCmds.GetMaxPlace(activeId, pType, pId, aId) or 0
+
+            if slotsNeeded > 0 then
+                local item = FindFlagInInventory(activeId)
+                if item and item.amount > 0 then
+                    local amountToPlace = math.min(slotsNeeded, item.amount)
+                    PlaceFlagMaxSlots(activeId, item.uid, amountToPlace)
+                end
+            end
+
+            return
+        else
+
+            return
+        end
+    end
+
+    local selectedFlag = nil
+    local fortuneItem = FindFlagInInventory("Fortune Flag")
+    local coinsItem = FindFlagInInventory("Coins Flag")
+
+    if fortuneItem and fortuneItem.amount > 0 then
+        selectedFlag = { id = "Fortune Flag", uid = fortuneItem.uid, amount = fortuneItem.amount }
+    elseif coinsItem and coinsItem.amount > 0 then
+        selectedFlag = { id = "Coins Flag", uid = coinsItem.uid, amount = coinsItem.amount }
+    end
+
+    if not selectedFlag then
+        return
+    end
+
+    local maxSlots = FlexibleFlagCmds.GetMaxPlace and FlexibleFlagCmds.GetMaxPlace(selectedFlag.id, pType, pId, aId) or 0
+    if maxSlots <= 0 then
+        maxSlots = 24
+    end
+
+    local amountToPlace = math.min(maxSlots, selectedFlag.amount)
+    if amountToPlace > 0 then
+        PlaceFlagMaxSlots(selectedFlag.id, selectedFlag.uid, amountToPlace)
+    end
+end
+
+local function StartEventBoosterLoop()
+    task.spawn(function()
+        while Running() do
+            pcall(function()
+                if EnsureInHatchWar() then
+                    AutoUseEventBoosters()
+                    AutoManageFlags()
+                end
+            end)
+            task.wait(2.5)
+        end
+    end)
+end
+
+local function CheckAndUnlockHouses(force)
+    if not CONFIG.BloodMoon.AutoUnlockHouses then return false end
+    if IsBusy() and not force then return false end
+
+    local inst = GetHatchWarInstance()
+    if not inst or not inst.InvokeCustom then return false end
+
+    local housesSave = inst:GetSavedValue("Houses")
+    local housesUnlocked = (HatchWarDoors and HatchWarDoors.Unlocked and HatchWarDoors.Unlocked(housesSave)) or 1
+    if housesUnlocked >= 8 then return false end
+
+    local nextHouse = housesUnlocked + 1
+    local cost = (HatchWarDoors and HatchWarDoors.UnlockCost and HatchWarDoors.UnlockCost(nextHouse)) or math.huge
+    local currentLollipops = GetLollipopCount()
+
+    if currentLollipops >= cost then
+        local spot = HOUSE_SPOTS[nextHouse]
+        if not spot then return false end
+
+        local hrp = GetHRP()
+        local returnCF = hrp and hrp.CFrame
+        local wasAnchored = hrp and hrp.Anchored
+
+        print(string.format("[blood moon] Unlocking House %d (Lollipops: %d/%d)...", nextHouse, currentLollipops, cost))
+        SafeTeleport(spot)
+        task.wait(0.65)
+
+        local ok, res, msg = pcall(function()
+            return inst:InvokeCustom("HW_Doors_Unlock", nextHouse)
+        end)
+
+        if ok and res == false and tostring(msg):find("Walk up") then
+            task.wait(0.5)
+            ok, res, msg = pcall(function()
+                return inst:InvokeCustom("HW_Doors_Unlock", nextHouse)
+            end)
+        end
+
+        if ok and res ~= false then
+            print(string.format("[blood moon] Unlocked House %d", nextHouse))
+        else
+            warn(string.format("[blood moon] Unlock House %d failed: %s", nextHouse, tostring(msg or res)))
+        end
+        task.wait(0.3)
+
+        if returnCF then
+            SafeTeleport(returnCF)
+            task.wait(0.2)
+            local curHrp = GetHRP()
+            if curHrp and wasAnchored then
+                curHrp.Anchored = true
+            end
+        end
+        return ok and res ~= false
+    end
+    return false
+end
+
+local function CheckAndPlaceGiantCandyChests()
+    if not CONFIG.League or not CONFIG.League.Enabled then return false end
+    local inst = GetHatchWarInstance()
+    if not inst then return false end
+
+    local count = 0
+    pcall(function()
+        local Items = LoadModule(Library, "Items")
+        if Items and Items.Misc then
+            local item = Items.Misc("Giant Candy Chest")
+            count = item and item:CountExact() or 0
+        end
+    end)
+
+    if count <= 0 then return false end
+
+    local housesSave = inst:GetSavedValue("Houses")
+    local housesUnlocked = (HatchWarDoors and HatchWarDoors.Unlocked and HatchWarDoors.Unlocked(housesSave)) or 1
+    local targetHouse = 1
+
+    local spot = HOUSE_SPOTS[targetHouse]
+    if spot then
+        local hrp = GetHRP()
+        local returnCF = hrp and hrp.CFrame
+        local wasAnchored = hrp and hrp.Anchored
+
+        SafeTeleport(spot)
+        task.wait(0.3)
+
+        local placed = false
+        pcall(function()
+            local CandyChest = LoadModule(Client, "HatchWarCmds") and LoadModule(Client.HatchWarCmds, "CandyChest")
+            if CandyChest and CandyChest.Place then
+                local res = CandyChest.Place(targetHouse)
+                placed = (res ~= "busy" and res ~= false)
+            elseif inst.InvokeCustom then
+                local res = inst:InvokeCustom("HW_Doors_SpawnChest", targetHouse)
+                placed = (res ~= false)
+            end
+        end)
+
+        if placed then
+            print(string.format("[league] Placed Giant Candy Chest at House %d", targetHouse))
+            task.wait(0.5)
+        end
+
+        if returnCF then
+            SafeTeleport(returnCF)
+            task.wait(0.15)
+            local curHrp = GetHRP()
+            if curHrp and wasAnchored then
+                curHrp.Anchored = true
+            end
+        end
+        return placed
+    end
+    return false
+end
+
+local function FindAllEventChests()
+    local chests = {}
+    local things = workspace:FindFirstChild("__THINGS")
+    local bFolder = things and things:FindFirstChild("Breakables")
+    local hrp = GetHRP()
+    local myPos = hrp and hrp.Position
+
+    if bFolder then
+        for _, b in ipairs(bFolder:GetChildren()) do
+            if b:IsA("Model") and b.Name ~= "Highlight" then
+                if IsChestBreakable(b) then
+                    table.insert(chests, b)
+                end
+            end
+        end
+    end
+
+    pcall(function()
+        local CandyChest = LoadModule(Client, "HatchWarCmds") and LoadModule(Client.HatchWarCmds, "CandyChest")
+        if CandyChest and CandyChest.State then
+            local uvs = debug.getupvalues(CandyChest.State)
+            local u58 = uvs and uvs[1]
+            if type(u58) == "table" then
+                for _, item in pairs(u58) do
+                    local b = item.Breakable and item.Breakable.model
+                    if b and b.Parent and b:IsA("Model") and not table.find(chests, b) then
+                        table.insert(chests, b)
+                    end
+                end
+            end
+        end
+    end)
+
+    if #chests > 1 and myPos then
+        table.sort(chests, function(a, b)
+            local aCandy = (a:GetAttribute("CandyChest") == true)
+            local bCandy = (b:GetAttribute("CandyChest") == true)
+            if aCandy and not bCandy then return true end
+            if not aCandy and bCandy then return false end
+
+            local pA = a:GetPivot()
+            local pB = b:GetPivot()
+            local distA = pA and (pA.Position - myPos).Magnitude or 9999
+            local distB = pB and (pB.Position - myPos).Magnitude or 9999
+            return distA < distB
+        end)
+    end
+
+    return chests
+end
+
+local FindStreetCandyChests = FindAllEventChests
+
+local function BreakTargetChest(chestModel, maxDuration)
+    if not chestModel or not chestModel.Parent then return false end
+    maxDuration = maxDuration or 25
+    local chestPivot = chestModel:GetPivot()
+    local chestPos = chestPivot and chestPivot.Position
+    if not chestPos then return false end
+
+    local chestId = chestModel:GetAttribute("BreakableID") or chestModel.Name
+    print(string.format("[league] Target Chest: %s",
+        tostring(chestId), chestPos.X, chestPos.Y, chestPos.Z))
+
+    local hrp = GetHRP()
+    local oldPos = hrp and hrp.CFrame
+    local wasAnchored = hrp and hrp.Anchored
+
+    local standPos = CFrame.new(chestPos + Vector3.new(0, 3, 6))
+    SafeTeleport(standPos)
+    task.wait(0.2)
+    hrp = GetHRP()
+    if hrp then hrp.Anchored = true end
+
+    local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
+    local startTime = os.clock()
+    local lastTap = 0
+
+    while Running() and chestModel.Parent and (os.clock() - startTime < maxDuration) do
+
+        local pets = GetLocalPets()
+        if #pets > 0 then
+            for _, pet in ipairs(pets) do
+                pcall(function()
+                    if pet:GetTarget() ~= chestModel then
+                        pet:SetTarget(chestModel)
+                    end
+                end)
+            end
+        end
+
+        if netDamage and os.clock() - lastTap >= 0.07 then
+            lastTap = os.clock()
+            pcall(function()
+                if SignalMod and SignalMod.Fire then
+                    SignalMod.Fire("AutoClicker_Nearby", chestModel.Name)
+                else
+                    netDamage:FireServer(chestModel.Name)
+                end
+            end)
+        end
+
+        task.wait(0.07)
+    end
+
+    local broken = (not chestModel.Parent)
+    if broken then
+        print(string.format("[league] Broken Chest: %s (+Points)", tostring(chestId)))
+    end
+
+    if oldPos then
+        SafeTeleport(oldPos)
+        task.wait(0.15)
+        local curHrp = GetHRP()
+        if curHrp and wasAnchored then
+            curHrp.Anchored = true
+        end
+    end
+
+    return broken
+end
+
+local function CheckAndKnockDoors(force)
+    if not CONFIG.BloodMoon.AutoKnock then return false end
+    if IsBusy() and not force then return false end
+    local inst = GetHatchWarInstance()
+    if not inst or not inst.InvokeCustom then return false end
+
+    local moonState = GetBloodMoonState()
+    local isBloodMoon = (moonState == "up")
+    if CONFIG.BloodMoon.OnlyInBloodMoon and not isBloodMoon then
+        return false
+    end
+
+    local doorsSave = inst:GetSavedValue("Doors")
+    local housesSave = inst:GetSavedValue("Houses")
+    local maxHouse = (HatchWarDoors and HatchWarDoors.Unlocked and HatchWarDoors.Unlocked(housesSave)) or 1
+    local now = workspace:GetServerTimeNow()
+    local curCoins = GetCoins()
+
+    local order = {}
+    if isBloodMoon and CONFIG.BloodMoon.PrioritizeHouses7And8 then
+        for h = maxHouse, 1, -1 do
+            table.insert(order, h)
+        end
+    else
+        for h = 1, maxHouse do
+            table.insert(order, h)
+        end
+    end
+
+    local knockedAny = false
+    local hrp = GetHRP()
+    local returnCF = hrp and hrp.CFrame
+    local wasAnchored = hrp and hrp.Anchored
+
+    for _, houseNum in ipairs(order) do
+        local cdEnd = (HatchWarDoors and HatchWarDoors.CooldownEnd and HatchWarDoors.CooldownEnd(doorsSave, houseNum)) or 0
+        if now >= cdEnd then
+            local knockCost = (HatchWarDoors and HatchWarDoors.KnockCost and HatchWarDoors.KnockCost(houseNum)) or 1_000_000
+            if curCoins >= knockCost then
+                local spot = HOUSE_SPOTS[houseNum]
+                if spot then
+                    SafeTeleport(spot)
+                    task.wait(0.2)
+                end
+
+                local ok, res = pcall(function()
+                    return inst:InvokeCustom("HW_Doors_Knock", houseNum)
+                end)
+                if ok and res ~= false then
+                    knockedAny = true
+                    print(string.format("[blood moon] open_house:%d (BloodMoon: %s)", houseNum, tostring(isBloodMoon)))
+                    task.wait(0.3)
+
+                    if CONFIG.League and CONFIG.League.Enabled and CONFIG.League.PostKnockCheck then
+                        task.wait(0.4)
+                        local streetChests = FindStreetCandyChests()
+                        for _, chest in ipairs(streetChests) do
+                            local cp = chest:GetPivot() and chest:GetPivot().Position
+                            if cp and spot and (cp - spot.Position).Magnitude <= 40 then
+                                BreakTargetChest(chest, 30)
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if knockedAny and returnCF then
+        SafeTeleport(returnCF)
+        task.wait(0.15)
+        local curHrp = GetHRP()
+        if curHrp and wasAnchored then
+            curHrp.Anchored = true
+        end
+    end
+    return knockedAny
+end
+
+local function CheckAndOpenPumpkin(force)
+    if not CONFIG.BloodMoon.AutoPumpkin then return false end
+    if IsBusy() and not force then return false end
+    local inst = GetHatchWarInstance()
+    if not inst or not inst.InvokeCustom then return false end
+
+    local pumpkinSave = inst:GetSavedValue("Pumpkin")
+    local points = pumpkinSave and pumpkinSave.Points or 0
+    local bosses = GetCurrentMaxUnlockedZone() or 1
+    local cap = (HatchWarPumpkin and HatchWarPumpkin.Cap and HatchWarPumpkin.Cap(bosses)) or 4000
+    local opens = (HatchWarPumpkin and HatchWarPumpkin.OpensFor and HatchWarPumpkin.OpensFor(points, cap)) or 0
+
+    if opens > 0 then
+        local hrp = GetHRP()
+        local returnCF = hrp and hrp.CFrame
+        local wasAnchored = hrp and hrp.Anchored
+
+        SafeTeleport(PUMPKIN_SPOT)
+        task.wait(0.25)
+
+        local ok, res = pcall(function()
+            return inst:InvokeCustom("HW_Pumpkin_Open")
+        end)
+        if ok and res ~= false then
+            print(string.format("[pumpkin] Opened Giant Pumpkin (x%d, points: %s/%s)",
+                opens, FormatNumber(points), FormatNumber(cap)))
+            task.wait(0.3)
+        end
+
+        if returnCF then
+            SafeTeleport(returnCF)
+            task.wait(0.15)
+            local curHrp = GetHRP()
+            if curHrp and wasAnchored then
+                curHrp.Anchored = true
+            end
+        end
+        return true
+    end
+    return false
+end
+
+currentCycle = currentCycle or 1
+
+local function ClearCycleCache(cycleNum)
+    local cNum = cycleNum or currentCycle
+
+    ForceCleanupBossFight()
+
+    pcall(function()
+        local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+        if pGui then
+            local instances = pGui:FindFirstChild("_INSTANCES")
+            if instances then
+                for _, child in ipairs(instances:GetChildren()) do
+                    if child.Name:find("Boss") or child.Name:find("Egg") or child.Name:find("Hatch") then
+                        child.Enabled = false
+                    end
+                end
+            end
+        end
+    end)
+
+    local hrp = GetHRP()
+    if hrp then
+        hrp.Anchored = false
+    end
+
+    pcall(function()
+        collectgarbage("count")
+    end)
+
+    task.wait(0.3)
+end
+
+local function PerformEventIntermissions()
+
+    if CONFIG.League and CONFIG.League.Enabled then
+        CheckAndPlaceGiantCandyChests()
+        local streetChests = FindStreetCandyChests()
+        if #streetChests > 0 then
+            for _, chest in ipairs(streetChests) do
+                BreakTargetChest(chest, 20)
+                task.wait(0.2)
+            end
+        end
+    end
+
+    while CheckAndUnlockHouses(true) do
+        task.wait(0.3)
+    end
+
+    CheckAndKnockDoors(true)
+
+    CheckAndOpenPumpkin(true)
+
+    if CONFIG.AutoUpgrade and (os.clock() - lastUpgradeCheck > CONFIG.UpgradeCheckInterval) then
+        lastUpgradeCheck = os.clock()
+        CheckAndBuyUpgrades(true)
+    end
+end
+
+local function BossEndGameCycleLoop(targetZone)
+
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
+        local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
+        if not afReady or lastAutoFarmZone ~= targetZone then
+            local afOk = EnsureAutoFarmActiveAtZone(targetZone)
+            if not afOk then
+                warn(string.format("[auto boss] Zone %d AutoFarm not ready -> Delay boss cycle.", targetZone))
+                return 0
+            end
+        end
+    end
+
+    runState.isFightingBoss = true
+    local info = BOSS_INFO[targetZone]
+    local minCoinsToFight = info and info.MinCoins or 98000
+    local fightCountInCycle = 0
+    local cycleStartCoins = GetCoins()
+
+    local inst = GetHatchWarInstance()
+    local bossSpot = info and info.Spot
+    local bFolder = inst and inst.model and inst.model:FindFirstChild("INTERACT")
+        and inst.model.INTERACT:FindFirstChild("Bosses")
+        and inst.model.INTERACT.Bosses:FindFirstChild("Boss" .. tostring(targetZone))
+    if bFolder and bFolder:FindFirstChild("Idle") then
+        bossSpot = bFolder.Idle.CFrame + Vector3.new(0, 2, 0)
+    end
+    if bossSpot then
+        local hrp = GetHRP()
+        if not hrp or (hrp.Position - bossSpot.Position).Magnitude > 6 then
+            SafeTeleport(bossSpot)
+            task.wait(0.3)
+        end
+        hrp = GetHRP()
+        if hrp then hrp.Anchored = true end
+    end
+
+    local bossFarmActive = true
+    local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
+
+    StartAutoTapWorker(targetZone, function()
+        return bossFarmActive
+    end)
+
+    task.spawn(function()
+        while Running() and bossFarmActive do
+            local valid = GetZoneBreakables(targetZone)
+            local pets = GetLocalPets()
+
+            if #valid > 0 and #pets > 0 then
+                for i, pet in ipairs(pets) do
+                    local targetBreakable = valid[((i - 1) % #valid) + 1]
+                    if targetBreakable and targetBreakable.Parent then
+                        pcall(function()
+                            if pet:GetTarget() ~= targetBreakable then
+                                pet:SetTarget(targetBreakable)
+                            end
+                        end)
+                    end
+                end
+            end
+            task.wait(0.18)
+        end
+    end)
+
+    local lastIntermissionCheck = os.clock()
+    while Running() and GetCoins() >= minCoinsToFight do
+        fightCountInCycle = fightCountInCycle + 1
+
+        AutoUseEventBoosters()
+
+        local success = FightBossAtZone(targetZone, true)
+
+        if os.clock() - lastIntermissionCheck >= 30 then
+            lastIntermissionCheck = os.clock()
+            PerformEventIntermissions()
+        end
+
+        if not success then
+
+            task.wait(1.0)
+        else
+
+            task.wait(0.25)
+        end
+
+        PerformEventIntermissions()
+
+        if GetCoins() < minCoinsToFight then
+            break
+        end
+    end
+
+    bossFarmActive = false
+    runState.isFightingBoss = false
+    return fightCountInCycle
+end
+
+local function HatchEndGameCycleLoop()
+
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
+        local targetZone = CONFIG.EndGame.TargetZone or 6
+        local afReady = AutoFarmCmds and AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled()
+        if not afReady or lastAutoFarmZone ~= targetZone then
+            local afOk = EnsureAutoFarmActiveAtZone(targetZone)
+            if not afOk then
+                warn(string.format("[auto hatch] Zone %d AutoFarm not ready -> Delay hatch cycle.", targetZone))
+                return 0
+            end
+        end
+    end
+
+    runState.isHatching = true
+    if not CustomEggsCmds or not Network then
+        runState.isHatching = false
+        task.wait(1)
+        return 0
+    end
+
+    CheckAndBuyEggSlots()
+
+    AutoUseEventBoosters()
+
+    local eggName = CONFIG.EndGame.EggName or "Manor Egg"
+    local HATCH_STAND_CFRAME = EGG_STAND_CFRAMES[eggName] or (CONFIG.EndGame.EggSpot and CFrame.new(CONFIG.EndGame.EggSpot)) or CFrame.new(7537.90, 16.21, 21962.36)
+    SafeTeleport(HATCH_STAND_CFRAME)
+    task.wait(0.3)
+    local hrp = GetHRP()
+    if hrp then hrp.Anchored = true end
+
+    local eggUid = CustomEggsCmds.GetClosestById and CustomEggsCmds.GetClosestById(CONFIG.EndGame.EggName)
+    local eggUnitPrice = 98000
+    pcall(function()
+        local CalcEggPricePlayer = LoadModule(Library, "Balancing.CalcEggPricePlayer")
+        local eggData = eggUid and CustomEggsCmds.Get(eggUid)
+        if eggData and CalcEggPricePlayer then
+            eggUnitPrice = CalcEggPricePlayer(eggData:Directory()) or 98000
+        end
+    end)
+
+    local maxHatch = (EggCmds and EggCmds.GetMaxHatch and EggCmds.GetMaxHatch()) or 8
+    local hatchBatches = 0
+    local lastHatchPrint = 0
+    local hatchFarmActive = true
+    local netDamage = game:GetService("ReplicatedStorage").Network:FindFirstChild("Breakables_PlayerDealDamage")
+    local targetFarmZone = CONFIG.EndGame.TargetZone or 6
+
+    StartAutoTapWorker(targetFarmZone, function()
+        return hatchFarmActive
+    end)
+
+    task.spawn(function()
+        while Running() and hatchFarmActive do
+            local valid = GetZoneBreakables(targetFarmZone)
+            local pets = GetLocalPets()
+
+            if #valid > 0 and #pets > 0 then
+                for i, pet in ipairs(pets) do
+                    local targetBreakable = valid[((i - 1) % #valid) + 1]
+                    if targetBreakable and targetBreakable.Parent then
+                        pcall(function()
+                            if pet:GetTarget() ~= targetBreakable then
+                                pet:SetTarget(targetBreakable)
+                            end
+                        end)
+                    end
+                end
+            end
+            task.wait(0.15)
+        end
+    end)
+
+    local failedStreak = 0
+    local lastIntermissionCheck = os.clock()
+    while Running() and GetCoins() >= eggUnitPrice do
+        if not eggUid then
+            eggUid = CustomEggsCmds.GetClosestById and CustomEggsCmds.GetClosestById(CONFIG.EndGame.EggName)
+        end
+
+        local curCoins = GetCoins()
+        maxHatch = (EggCmds and EggCmds.GetMaxHatch and EggCmds.GetMaxHatch()) or maxHatch
+
+        local maxAffordable = math.floor(curCoins / eggUnitPrice)
+        local batchAmount = math.min(maxHatch, maxAffordable)
+
+        if batchAmount <= 0 then
+            break
+        end
+
+        local success = false
+        if eggUid then
+            local ok, res = pcall(function()
+                return Network.Invoke("CustomEggs_Hatch", eggUid, batchAmount)
+            end)
+            if ok and res ~= false then
+                success = true
+                failedStreak = 0
+                hatchBatches = hatchBatches + 1
+            else
+                failedStreak = failedStreak + 1
+            end
+        end
+
+        if not success and failedStreak >= 2 then
+
+            SafeTeleport(HATCH_STAND_CFRAME)
+            task.wait(0.2)
+        end
+
+        if os.clock() - lastIntermissionCheck >= 30 then
+            lastIntermissionCheck = os.clock()
+            PerformEventIntermissions()
+        end
+
+        task.wait(0.12)
+
+        if os.clock() - lastHatchPrint > 3 or hatchBatches == 1 then
+            lastHatchPrint = os.clock()
+            print(string.format("[auto map] Zone %d || Hatch: #%d (x%d) || %s || Coins: %s || cycle: %d",
+                CONFIG.EndGame.TargetZone or 6, hatchBatches, batchAmount, CONFIG.EndGame.EggName, FormatNumber(GetCoins()), currentCycle))
+        end
+    end
+
+    hatchFarmActive = false
+    task.wait(0.1)
+    hrp = GetHRP()
+    if hrp then hrp.Anchored = false end
+
+    runState.isHatching = false
+    return hatchBatches
+end
+
+local function StartBloodMoonWatcher()
+    task.spawn(function()
+        local lastMoonState = "down"
+        while Running() do
+            pcall(function()
+                if EnsureInHatchWar() then
+                    local state = GetBloodMoonState()
+                    if state ~= lastMoonState then
+                        lastMoonState = state
+                        if state == "up" then
+                            print("[blood moon] Blood Moon RISE (3x Luck, 2x Huge/Titanic).")
+                        elseif state == "warn" then
+                            local nextRise = GetBloodMoonNextRise()
+                            local timeLeft = nextRise and math.max(0, math.ceil(nextRise - workspace:GetServerTimeNow())) or 300
+                            print(string.format("[blood moon] Blood Moon in %ds", timeLeft))
+                        end
+                    end
+                end
+            end)
+            task.wait(4)
+        end
+    end)
+end
+
+local function StartLeaguePatrolWorker()
+    if not CONFIG.League or not CONFIG.League.Enabled then return end
+    task.spawn(function()
+        local lastScanTime = 0
+        while Running() do
+            local interval = CONFIG.League.ScanInterval or 2.5
+            if os.clock() - lastScanTime >= interval then
+                lastScanTime = os.clock()
+
+                CheckAndPlaceGiantCandyChests()
+
+                local allChests = FindAllEventChests()
+                if #allChests > 0 then
+                    local moonState = GetBloodMoonState()
+                    local isBloodMoon = (moonState == "up")
+                    print(string.format("[league] Radar: %d chests found (BloodMoon: %s)",
+                        #allChests, tostring(isBloodMoon)))
+                    for _, chest in ipairs(allChests) do
+                        if not Running() then break end
+                        BreakTargetChest(chest, 25)
+                        task.wait(0.2)
+                    end
+                end
+            end
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function StartMainAutomationLoop()
+    task.spawn(function()
+        while Running() do
+            if not EnsureInHatchWar() then
+                task.wait(1.5)
+                continue
+            end
+
+            local maxZone = GetCurrentMaxUnlockedZone()
+            local targetZone = CONFIG.EndGame.TargetZone or 6
+
+            if maxZone < targetZone then
+                local bossToBeat = maxZone
+                local info = BOSS_INFO[bossToBeat]
+
+                print(string.format("[auto map] Zone %d/%d || Boss %d: %s",
+                    maxZone, targetZone, bossToBeat, info and info.Name or "?"))
+
+                FightBossAtZone(bossToBeat)
+
+                task.wait(0.5)
+                local newMax = GetCurrentMaxUnlockedZone()
+                if newMax > maxZone then
+                    print(string.format("[auto map] Unlocked Zone %d", newMax))
+                end
+            else
+
+                EnforceEndGameExclusivity()
+
+                local curCoins = GetCoins()
+                local targetCoins = CONFIG.EndGame.TargetCoins or 1_000_000_000
+                local hasAutoFarm = HasAutoFarmGamepass()
+
+                if hasAutoFarm and IsMaxZoneUnlocked() then
+                    local autoFarmActive = EnsureAutoFarmActiveAtZone(targetZone)
+                    if not autoFarmActive then
+                        print(string.format("[auto farm] Zone %d not ready -> Retrying before EndGame...", targetZone))
+                        task.wait(1.0)
+                        continue
+                    end
+                end
+
+                if CONFIG.EndGame.Boss == true then
+                    local info = BOSS_INFO[targetZone]
+                    local minCoinsToFight = info and info.MinCoins or 98000
+
+                    local minBufferCoins = math.min(targetCoins * 0.3, 300_000_000)
+
+                    if curCoins < minBufferCoins or curCoins < minCoinsToFight then
+                        print(string.format("[auto map] Coins low (%s < %s) -> Farming Zone %d",
+                            FormatNumber(curCoins), FormatNumber(targetCoins), targetZone))
+                        FarmBreakablesUntil(targetCoins, targetCoins, targetZone)
+                    else
+
+                        PerformEventIntermissions()
+
+                        BossEndGameCycleLoop(targetZone)
+                        ClearCycleCache(currentCycle)
+                        currentCycle = currentCycle + 1
+
+                        PerformEventIntermissions()
+                    end
+                elseif CONFIG.EndGame.Hatch == true then
+                    if curCoins < targetCoins then
+                        FarmBreakablesUntil(targetCoins, targetCoins, targetZone)
+                    else
+                        PerformEventIntermissions()
+                        HatchEndGameCycleLoop()
+                        ClearCycleCache(currentCycle)
+                        currentCycle = currentCycle + 1
+                        PerformEventIntermissions()
+                    end
+                else
+                    PerformEventIntermissions()
+                    task.wait(1)
+                end
+            end
+
+            task.wait(0.2)
+        end
+    end)
+end
+
+task.spawn(function()
+    print("[event] Checking HatchWar status...")
+    while Running() do
+        local joined = EnsureInHatchWar()
+        if joined == true then
+            print("[event] HatchWar confirmed (true). Starting engine...")
+            break
+        end
+        print("[event] Waiting for map load... Retrying in 2s.")
+        task.wait(2)
+    end
+
+    if not Running() then return end
+
+    local targetZone = CONFIG.EndGame.TargetZone or 6
+    if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
+        while Running() do
+            local afOk = EnsureAutoFarmActiveAtZone(targetZone)
+            if afOk == true then
+                break
+            end
+            print(string.format("[auto farm] Waiting Zone %d (res: false)... Retrying in 1.5s.", targetZone))
+            task.wait(1.5)
+        end
+    end
+
+    PerformEventIntermissions()
+
+    StartEventBoosterLoop()
+    StartBloodMoonWatcher()
+    StartLeaguePatrolWorker()
+    StartMainAutomationLoop()
+end)
