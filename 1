@@ -21,13 +21,24 @@ local function WaitForCharacter()
 end
 WaitForCharacter()
 
+local execName, execVer = "Unknown", "Unknown"
+pcall(function()
+    if identifyexecutor then
+        execName, execVer = identifyexecutor()
+    elseif getexecutorname then
+        execName = getexecutorname()
+    end
+end)
+print(string.format("[executor] Running on %s (Version: %s)", tostring(execName), tostring(execVer)))
+local isArceus = (string.find(string.lower(tostring(execName)), "arceus") ~= nil)
+
 local env = getfenv()
 local getgenv = env.getgenv or function() return _G end
 local setreadonly = env.setreadonly
 local make_writeable = env.make_writeable
 local dynamicRequire = env.require or require
-local hookfunction = env.hookfunction or hookfunction or replaceclosure
-local hookmetamethod = env.hookmetamethod or hookmetamethod
+local hookfunction = (not isArceus) and (env.hookfunction or hookfunction or replaceclosure) or nil
+local hookmetamethod = (not isArceus) and (env.hookmetamethod or hookmetamethod) or nil
 local newcclosure = env.newcclosure or function(f) return f end
 local getnamecallmethod = env.getnamecallmethod or getnamecallmethod
 
@@ -386,7 +397,7 @@ pcall(function()
     local VirtualUser = game:GetService("VirtualUser")
 
     local getcons = getconnections or get_signal_cons
-    if type(getcons) == "function" then
+    if not isArceus and type(getcons) == "function" then
         for _, conn in ipairs(getcons(LocalPlayer.Idled)) do
             if conn and conn.Disable then
                 conn:Disable()
@@ -464,7 +475,7 @@ pcall(function()
         end
     end
 
-    if CONFIG.AntiIdleTracking then
+    if CONFIG.AntiIdleTracking and not isArceus then
         if Network and type(Network.Fire) == "function" then
             local origFire = Network.Fire
             if hookfunc then
