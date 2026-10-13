@@ -3,11 +3,15 @@ if not game:IsLoaded() then
 end
 
 local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 while not LocalPlayer do
     task.wait(0.2)
     LocalPlayer = Players.LocalPlayer
 end
+
+local HttpRequest = (syn and syn.request) or http_request or request or (getgenv and getgenv().request)
 
 local function WaitForCharacter()
     local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
@@ -26,6 +30,9 @@ local getgenv = env.getgenv or function() return _G end
 local setreadonly = env.setreadonly
 local make_writeable = env.make_writeable
 local dynamicRequire = env.require or require
+local hookmetamethod = env.hookmetamethod or hookmetamethod
+local newcclosure = env.newcclosure or function(f) return f end
+local getnamecallmethod = env.getnamecallmethod or getnamecallmethod
 
 if getgenv().AutoMapStop then
     pcall(getgenv().AutoMapStop)
@@ -133,6 +140,7 @@ local UltimateCmds = LoadModule(Client, "UltimateCmds")
 local SaveMod = LoadModule(Client, "Save")
 ConsumableCmds = LoadModule(Client, "ConsumableCmds")
 local SignalMod = LoadModule(Library, "Signal")
+local LeagueCmds = LoadModule(Client, "LeagueCmds")
 
 local HatchWarTypes = LoadModule(Types, "HatchWar")
 local EventUpgradesDir = LoadModule(Directory, "EventUpgrades")
@@ -172,9 +180,18 @@ end
 
 local DEFAULT_CONFIG = {
     AutoMap = true,
+    AntiIdleTracking = true,
     AutoUltimate = true,
     SilentHatch = true,
     AutoFlags = true,
+
+    Coordinator = {
+        Enabled = true,
+        ServerUrl = "https://join-4bxx.onrender.com",
+        MaxPlayersThreshold = 6,
+        PlaceId = 8737899170,
+        LeagueId = nil,
+    },
 
     AutoUpgrade = true,
     AutoBuyEggSlots = true,
@@ -207,7 +224,7 @@ local DEFAULT_CONFIG = {
     },
 
     MinCoinsToFight = 200,
-    RecommendedRatio = 0.90,
+    RecommendedRatio = 2.00,
 }
 
 local function MergeConfig(target, source)
@@ -454,6 +471,65 @@ pcall(function()
                 end
                 return origInvoke(remoteName, ...)
             end)
+        end
+    end
+
+    if CONFIG.AntiIdleTracking then
+        if Network and type(Network.Fire) == "function" then
+            local origFire = Network.Fire
+            if hookfunc then
+                local rawFire
+                rawFire = hookfunc(Network.Fire, function(remoteName, ...)
+                    if remoteName == "Move Server" or remoteName == "Idle Tracking: Update Timer" then
+                        return nil
+                    end
+                    return rawFire(remoteName, ...)
+                end)
+            else
+                SafePatch(Network, "Fire", function(remoteName, ...)
+                    if remoteName == "Move Server" or remoteName == "Idle Tracking: Update Timer" then
+                        return nil
+                    end
+                    return origFire(remoteName, ...)
+                end)
+            end
+        end
+
+        local FFlags = LoadModule(Client, "FFlags")
+        if FFlags and FFlags.Keys and FFlags.Get then
+            local origGet = FFlags.Get
+            local blockedKeys = {
+                [FFlags.Keys.AntiAFKMoveTime] = true,
+                [FFlags.Keys.AntiAFKMoveTimeUnf] = true,
+                [FFlags.Keys.AntiAFKMoveTimeMitchell] = true,
+                [FFlags.Keys.AntiAFKMoveTimeUnfMitchell] = true,
+            }
+            if hookfunc then
+                local rawGet
+                rawGet = hookfunc(FFlags.Get, function(key, ...)
+                    if blockedKeys[key] then return math.huge end
+                    return rawGet(key, ...)
+                end)
+            else
+                SafePatch(FFlags, "Get", function(key, ...)
+                    if blockedKeys[key] then return math.huge end
+                    return origGet(key, ...)
+                end)
+            end
+        end
+
+        if hookmetamethod then
+            local oldNamecall
+            oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+                local method = getnamecallmethod()
+                if method == "FireServer" and self and typeof(self) == "Instance" then
+                    local name = self.Name
+                    if name == "Move Server" or name == "Idle Tracking: Update Timer" then
+                        return nil
+                    end
+                end
+                return oldNamecall(self, ...)
+            end))
         end
     end
 end)
@@ -985,7 +1061,7 @@ local function GetRecommendedTargetCoins(zoneNum)
         recCoins = fallbackCoins[zoneNum] or 30000
     end
 
-    local ratio = CONFIG.RecommendedRatio or 0.90
+    local ratio = CONFIG.RecommendedRatio or 2.00
     local targetCoins = math.floor(recCoins * ratio)
     return targetCoins, recCoins, recLuck
 end
@@ -1115,9 +1191,9 @@ local function FarmBreakablesUntil(targetCoins, recCoins, zoneNum)
     end
 
     local hasPass = HasAutoFarmGamepass()
-    local targetPct = recCoins and recCoins > 0 and ((targetCoins / recCoins) * 100) or 90
-    print(string.format("[auto map] Farming coins: %s / %s (Zone %d)",
-        FormatNumber(GetCoins()), FormatNumber(targetCoins), targetPct, targetZone))
+    local targetPct = recCoins and recCoins > 0 and ((targetCoins / recCoins) * 100) or ((CONFIG.RecommendedRatio or 2.00) * 100)
+    print(string.format("[auto map] Zone %d || Farming coins: %s / %s (%d%%)",
+        targetZone, FormatNumber(GetCoins()), FormatNumber(targetCoins), math.floor(targetPct)))
 
     SafeTeleport(targetCF)
     task.wait(0.25)
@@ -2011,6 +2087,28 @@ local function FindAllEventChests()
     return chests
 end
 
+local function LogLeagueStatus()
+    if not LeagueCmds then return end
+    local guild = nil
+    pcall(function() guild = LeagueCmds.GetMyGuild() end)
+    local rankData = nil
+    pcall(function() rankData = LeagueCmds.GetMyRank() end)
+
+    if guild and rankData then
+        print(string.format("[league] Clan: %s || Rank: #%s/%s || Points: %d",
+            tostring(guild.Name or "Unknown"),
+            tostring(rankData.Rank or "?"),
+            tostring(rankData.TotalRanked or "?"),
+            tonumber(guild.Points or guild.EffectivePoints) or 0))
+
+        if guild.PointContributions and type(guild.PointContributions) == "table" then
+            for _, member in ipairs(guild.PointContributions) do
+                print(string.format("  -> Member %s: %d pts", tostring(member.UserID), tonumber(member.Points) or 0))
+            end
+        end
+    end
+end
+
 local FindStreetCandyChests = FindAllEventChests
 
 local function BreakTargetChest(chestModel, maxDuration)
@@ -2068,6 +2166,7 @@ local function BreakTargetChest(chestModel, maxDuration)
     local broken = (not chestModel.Parent)
     if broken then
         print(string.format("[league] Broken Chest: %s (+Points)", tostring(chestId)))
+        task.delay(2.0, LogLeagueStatus)
     end
 
     if oldPos then
@@ -2151,13 +2250,16 @@ local function CheckAndKnockDoors(force)
         end
     end
 
-    if knockedAny and returnCF then
-        SafeTeleport(returnCF)
-        task.wait(0.15)
-        local curHrp = GetHRP()
-        if curHrp and wasAnchored then
-            curHrp.Anchored = true
+    if knockedAny then
+        if returnCF then
+            SafeTeleport(returnCF)
+            task.wait(0.15)
+            local curHrp = GetHRP()
+            if curHrp and wasAnchored then
+                curHrp.Anchored = true
+            end
         end
+        task.delay(2.0, LogLeagueStatus)
     end
     return knockedAny
 end
@@ -2633,7 +2735,229 @@ local function StartMainAutomationLoop()
     end)
 end
 
+local function GetLeagueCoordinatorPayload()
+    local guild = nil
+    if LeagueCmds and LeagueCmds.GetMyGuild then
+        pcall(function() guild = LeagueCmds.GetMyGuild() end)
+    end
+
+    local rankData = nil
+    if LeagueCmds and LeagueCmds.GetMyRank then
+        pcall(function() rankData = LeagueCmds.GetMyRank() end)
+    end
+
+    local leagueId = (CONFIG.Coordinator and CONFIG.Coordinator.LeagueId)
+        or (guild and (guild.ID or guild.Name))
+        or "DEFAULT_ROOM"
+    local leagueName = guild and guild.Name or "Unknown"
+    local clanRank = rankData and rankData.Rank or nil
+    local totalRanked = rankData and rankData.TotalRanked or nil
+    local clanPoints = guild and (guild.Points or guild.EffectivePoints) or 0
+
+    local contributions = {}
+    if guild and guild.PointContributions then
+        for _, m in ipairs(guild.PointContributions) do
+            table.insert(contributions, {
+                userId = tostring(m.UserID),
+                points = m.Points or 0
+            })
+        end
+    end
+
+    return {
+        leagueId = leagueId,
+        leagueName = leagueName,
+        username = LocalPlayer.Name,
+        currentJobId = game.JobId,
+        clanRank = clanRank,
+        totalRanked = totalRanked,
+        clanPoints = clanPoints,
+        contributions = contributions
+    }
+end
+
+local function CoordinatorRequest(endpoint, method, body)
+    if not CONFIG.Coordinator or not CONFIG.Coordinator.ServerUrl or CONFIG.Coordinator.ServerUrl == "" or not HttpRequest then
+        return nil
+    end
+    local baseUrl = string.gsub(CONFIG.Coordinator.ServerUrl, "/+$", "")
+    local ok, res = pcall(function()
+        return HttpRequest({
+            Url = baseUrl .. endpoint,
+            Method = method or "GET",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = body and HttpService:JSONEncode(body) or nil
+        })
+    end)
+    if ok and res and res.StatusCode == 200 then
+        return pcall(function() return HttpService:JSONDecode(res.Body) end) and HttpService:JSONDecode(res.Body)
+    end
+    return nil
+end
+
+local function FindLowPlayerRobloxServer(blockedJobIds)
+    if not HttpRequest then return nil end
+    local placeId = (CONFIG.Coordinator and CONFIG.Coordinator.PlaceId) or 8737899170
+    local url = string.format("https://games.roblox.com/v1/games/%d/servers/0?sortOrder=1&excludeFullGames=true&limit=100", placeId)
+    local ok, res = pcall(function()
+        return HttpRequest({ Url = url, Method = "GET" })
+    end)
+    if not ok or not res or res.StatusCode ~= 200 then return nil end
+
+    local data = pcall(function() return HttpService:JSONDecode(res.Body) end) and HttpService:JSONDecode(res.Body)
+    if not data or not data.data then return nil end
+
+    blockedJobIds = blockedJobIds or {}
+    for _, s in ipairs(data.data) do
+        local p = s.playing or 0
+        if p >= 1 and p <= 2 and s.id ~= game.JobId and not blockedJobIds[s.id] then
+            return s.id, p
+        end
+    end
+    return nil
+end
+
+local function AttemptTeleportToServer(placeId, targetJobId, waitSeconds)
+    waitSeconds = waitSeconds or 10
+    local failed = false
+    local failReason = nil
+
+    local conn
+    pcall(function()
+        conn = TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
+            failed = true
+            failReason = tostring(errorMessage or teleportResult)
+        end)
+    end)
+
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, targetJobId, LocalPlayer)
+    end)
+
+    local start = os.clock()
+    while os.clock() - start < waitSeconds do
+        if failed then break end
+        task.wait(0.5)
+    end
+
+    if conn then
+        pcall(function() conn:Disconnect() end)
+    end
+
+    return not failed, failReason
+end
+
+local function EnsureCoordinatorGathering()
+    if not CONFIG.Coordinator or not CONFIG.Coordinator.Enabled or not CONFIG.Coordinator.ServerUrl or CONFIG.Coordinator.ServerUrl == "" then
+        return true
+    end
+
+    print("[coordinator] Starting cluster coordination for:", LocalPlayer.Name)
+    local maxPlayers = CONFIG.Coordinator.MaxPlayersThreshold or 6
+    local placeId = CONFIG.Coordinator.PlaceId or 8737899170
+    local localBlocked = {}
+
+    while Running() do
+        local payload = GetLeagueCoordinatorPayload()
+        local res = CoordinatorRequest("/api/league/handshake", "POST", payload)
+
+        if res then
+            local role = res.role
+            local status = res.status
+            local targetJobId = res.targetJobId
+
+            if res.blockedJobIds and type(res.blockedJobIds) == "table" then
+                for _, bId in ipairs(res.blockedJobIds) do
+                    localBlocked[bId] = true
+                end
+            end
+
+            if role == "SCOUT" then
+                local currentPlayers = #Players:GetPlayers()
+                if currentPlayers <= maxPlayers and game.JobId ~= "" and not localBlocked[game.JobId] then
+                    local readyPayload = GetLeagueCoordinatorPayload()
+                    readyPayload.jobId = game.JobId
+                    readyPayload.playerCount = currentPlayers
+                    CoordinatorRequest("/api/league/ready", "POST", readyPayload)
+                    print(string.format("[coordinator] Scout confirmed server (%d/10). JobId: %s", currentPlayers, game.JobId))
+                    return true
+                else
+                    print(string.format("[coordinator] Server has %d players (threshold %d). Finding empty server...", currentPlayers, maxPlayers))
+                    local bestJobId, count = FindLowPlayerRobloxServer(localBlocked)
+                    if bestJobId then
+                        print(string.format("[coordinator] Teleporting Scout to %s (%d players)...", bestJobId, count))
+                        AttemptTeleportToServer(placeId, bestJobId, 10)
+                        task.wait(5)
+                    end
+                end
+            elseif role == "WORKER" then
+                if (status == "READY" or status == "FARMING") and targetJobId then
+                    if game.JobId ~= targetJobId then
+                        print(string.format("[coordinator] Worker teleporting to Leader server: %s...", targetJobId))
+                        local okTp, err = AttemptTeleportToServer(placeId, targetJobId, 10)
+                        if not okTp then
+                            warn(string.format("[coordinator] Teleport to %s failed (%s). Reporting server full...", targetJobId, tostring(err)))
+                            localBlocked[targetJobId] = true
+                            CoordinatorRequest("/api/league/report-server-full", "POST", {
+                                leagueId = payload.leagueId,
+                                username = LocalPlayer.Name,
+                                fullJobId = targetJobId
+                            })
+                            task.wait(3)
+                        end
+                    else
+                        print("[coordinator] Worker arrived at Leader server!")
+                        return true
+                    end
+                else
+                    print("[coordinator] Worker waiting for Leader to confirm server <= 6 players...")
+                end
+            end
+        else
+            warn("[coordinator] Cannot connect to Coordinator Server:", CONFIG.Coordinator.ServerUrl)
+            task.wait(3)
+        end
+
+        task.wait(5)
+    end
+    return false
+end
+
+local function StartCoordinatorHeartbeat()
+    if not CONFIG.Coordinator or not CONFIG.Coordinator.Enabled or not CONFIG.Coordinator.ServerUrl or CONFIG.Coordinator.ServerUrl == "" then
+        return
+    end
+
+    local placeId = CONFIG.Coordinator.PlaceId or 8737899170
+
+    task.spawn(function()
+        local lastStatusPrint = os.clock()
+        while Running() do
+            task.wait(15)
+            pcall(function()
+                local payload = GetLeagueCoordinatorPayload()
+                local res = CoordinatorRequest("/api/league/heartbeat", "POST", payload)
+                if res and res.command == "MIGRATE" and res.newTargetJobId and res.newTargetJobId ~= game.JobId then
+                    print(string.format("[coordinator] Migration triggered to new server: %s...", res.newTargetJobId))
+                    AttemptTeleportToServer(placeId, res.newTargetJobId, 10)
+                end
+
+                if os.clock() - lastStatusPrint >= 60 then
+                    lastStatusPrint = os.clock()
+                    LogLeagueStatus()
+                end
+            end)
+        end
+    end)
+end
+
 task.spawn(function()
+    if CONFIG.Coordinator and CONFIG.Coordinator.Enabled then
+        local gathered = EnsureCoordinatorGathering()
+        if not gathered or not Running() then return end
+        StartCoordinatorHeartbeat()
+    end
+
     print("[event] Checking HatchWar status...")
     while Running() do
         local joined = EnsureInHatchWar()
@@ -2646,6 +2970,17 @@ task.spawn(function()
     end
 
     if not Running() then return end
+
+    task.delay(1.5, LogLeagueStatus)
+
+    task.spawn(function()
+        while Running() do
+            task.wait(60)
+            if not (CONFIG.Coordinator and CONFIG.Coordinator.Enabled) then
+                pcall(LogLeagueStatus)
+            end
+        end
+    end)
 
     local targetZone = CONFIG.EndGame.TargetZone or 6
     if HasAutoFarmGamepass() and IsMaxZoneUnlocked() then
